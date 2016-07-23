@@ -202,6 +202,18 @@ struct tor_tls_t {
   void *callback_arg;
 };
 
+/** Extract and return SSL session key to be used as connection
+ * identifier in the associated uTP connection. */
+void
+tor_tls_copy_master_key(tor_tls_t *tls, unsigned char *master_key)
+{
+  SSL_SESSION *session;
+  memset(master_key, 0, SSL_MAX_MASTER_KEY_LENGTH);
+  if (tls && (session = SSL_get_session(tls->ssl))) {
+    memcpy(master_key, session->master_key, session->master_key_length);
+  }
+}
+
 /** The ex_data index in which we store a pointer to an SSL object's
  * corresponding tor_tls_t object. */
 static int tor_tls_object_ex_data_index = -1;

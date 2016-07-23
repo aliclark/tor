@@ -441,7 +441,7 @@ cell_pack(packed_cell_t *dst, const cell_t *src, int wide_circ_ids)
 /** Unpack the network-order buffer <b>src</b> into a host-order
  * cell_t structure <b>dest</b>.
  */
-static void
+void
 cell_unpack(cell_t *dest, const char *src, int wide_circ_ids)
 {
   if (wide_circ_ids) {

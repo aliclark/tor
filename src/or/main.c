@@ -144,6 +144,8 @@ static int signewnym_is_pending = 0;
 /** How many times have we called newnym? */
 static unsigned newnym_epoch = 0;
 
+/** uTP listener socket */
+tor_socket_t utp_listener = TOR_INVALID_SOCKET;
 /** Smartlist of all open connections. */
 static smartlist_t *connection_array = NULL;
 /** List of connections that have been marked for close and need to be freed
@@ -1193,7 +1195,17 @@ run_connection_housekeeping(int i, time_t now)
            conn->address, conn->port);
     memset(&cell,0,sizeof(cell_t));
     cell.command = CELL_PADDING;
+#if 0
     connection_or_write_cell_to_buf(&cell, or_conn);
+#else
+#if 0
+    // XXX: this was used in the original uTP branch,
+    // but the other method below is a more direct equivalent to the line above
+    channel_write_cell(TLS_CHAN_TO_BASE(or_conn->chan), &cell);
+#else
+    channel_tls_write_cell_method(or_conn->chan, &cell);
+#endif
+#endif
   }
 }
 
@@ -1718,6 +1730,13 @@ run_scheduled_events(time_t now)
   /* 11b. check pending unconfigured managed proxies */
   if (!net_is_disabled() && pt_proxies_configuration_pending())
     pt_configure_remaining_proxies();
+
+  // FIXME: this shouldn't be needed, alarms already handle this functionality
+  // TODO: alarms
+  /** Check for uTP periodic events */
+  if (utp_listener != TOR_INVALID_SOCKET) {
+    UTP_CheckTimeouts();
+  }
 
   /* 12. write the heartbeat message */
   if (options->HeartbeatPeriod &&

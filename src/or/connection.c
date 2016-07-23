@@ -2416,6 +2416,66 @@ retry_listener_ports(smartlist_t *old_conns,
   return r;
 }
 
+extern tor_socket_t utp_listener;
+
+/** Open a UDP server socket on <b>port</b> and add a callback to libutp
+ * to handle incoming uTP bytesfor us, which can be either new incoming
+ * connections or incoming uTP packets on existing connections. */
+static int
+retry_utp_listener(uint16_t port)
+{
+  struct sockaddr_in sin;
+  struct event *ev;
+  int retval;
+
+  if (utp_listener != TOR_INVALID_SOCKET) {
+    log_debug(LD_NET, "uTP socket already open");
+    return 0;
+  }
+
+  utp_listener = tor_open_socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+
+  if (!SOCKET_OK(utp_listener)) {
+    log_warn(LD_NET,"Socket creation failed: %s",
+    tor_socket_strerror(tor_socket_errno(-1)));
+    goto err;
+  }
+
+  make_socket_reuseable(utp_listener);
+
+  if (0 != port) {
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = INADDR_ANY;
+    sin.sin_port = htons(port);
+
+    if (bind(utp_listener,(const struct sockaddr *)&sin,sizeof(sin)) < 0) {
+      const char *helpfulhint = "";
+      int e = tor_socket_errno(utp_listener);
+      if (ERRNO_IS_EADDRINUSE(e))
+        helpfulhint = ". Is Tor already running?";
+      log_warn(LD_NET, "Could not bind to UDP port %u: %s%s", port,
+               tor_socket_strerror(e), helpfulhint);
+      tor_close_socket(utp_listener);
+      goto err;
+    }
+  }
+
+  set_socket_nonblocking(utp_listener);
+
+  log_fn(LOG_NOTICE, LD_NET,
+         "Listening on UDP port %u.", port);
+
+  ev = tor_event_new(tor_libevent_get_base(), utp_listener,
+                     EV_READ|EV_PERSIST, &utp_read_callback, NULL);
+  retval = event_add(ev, NULL);
+  log_notice(LD_NET, "Added uTP read event: %d, %d", ev!=NULL, retval);
+
+  return 0;
+ err:
+  return -1;
+}
+
 /** Launch listeners for each port you should have open.  Only launch
  * listeners who are not already open, and only close listeners we no longer
  * want.
@@ -2448,6 +2508,9 @@ retry_all_listeners(smartlist_t *replaced_conns,
                            new_conns,
                            close_all_noncontrol) < 0)
     retval = -1;
+
+  /* Start the uTP listener */
+  retry_utp_listener(router_get_advertised_or_port(options));
 
   /* Any members that were still in 'listeners' don't correspond to
    * any configured port.  Kill 'em. */

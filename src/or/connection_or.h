@@ -94,6 +94,7 @@ MOCK_DECL(int,connection_or_send_authenticate_cell,
 int is_or_protocol_version_known(uint16_t version);
 
 void cell_pack(packed_cell_t *dest, const cell_t *src, int wide_circ_ids);
+void cell_unpack(cell_t *dest, const char *src, int wide_circ_ids);
 int var_cell_pack_header(const var_cell_t *cell, char *hdr_out,
                          int wide_circ_ids);
 var_cell_t *var_cell_new(uint16_t payload_len);
