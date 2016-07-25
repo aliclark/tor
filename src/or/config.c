@@ -1122,6 +1122,8 @@ options_act_reversible(const or_options_t *old_options, char **msg)
        * code!  It also needs to happen before init_keys(), so it needs to
        * happen here too.  How yucky. */
       scheduler_init();
+
+      quux_event_base_loop_init(tor_libevent_get_base());
     }
 
     /* Adjust the port configuration so we can launch listeners. */

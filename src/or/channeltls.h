@@ -30,11 +30,26 @@ struct channel_tls_s {
   channel_t base_;
   /* or_connection_t pointer */
   or_connection_t *conn;
+
   struct UTPSocket *utp;
   buf_t *utp_write_buf;
   buf_t *utp_read_buf;
   int utp_sent_id:1;
   int utp_is_dummy:1;
+
+  quux_stream stream;
+  // used to register if a QUIC read callback came in too early
+  int want_read_after_handshake;
+
+  // Nb. these two cells are used for read-side buffering.
+  char cell_buf[CELL_MAX_NETWORK_SIZE];
+  int cell_pos;
+  buf_t* var_cell_buf;
+  int in_var_cell:1;
+
+
+  // For the cell write what do we need
+
 };
 
 typedef struct utp_packet_t {

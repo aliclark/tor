@@ -144,8 +144,6 @@ static int signewnym_is_pending = 0;
 /** How many times have we called newnym? */
 static unsigned newnym_epoch = 0;
 
-/** uTP listener socket */
-tor_socket_t utp_listener = TOR_INVALID_SOCKET;
 /** Smartlist of all open connections. */
 static smartlist_t *connection_array = NULL;
 /** List of connections that have been marked for close and need to be freed
@@ -1731,13 +1729,6 @@ run_scheduled_events(time_t now)
   if (!net_is_disabled() && pt_proxies_configuration_pending())
     pt_configure_remaining_proxies();
 
-  // FIXME: this shouldn't be needed, alarms already handle this functionality
-  // TODO: alarms
-  /** Check for uTP periodic events */
-  if (utp_listener != TOR_INVALID_SOCKET) {
-    UTP_CheckTimeouts();
-  }
-
   /* 12. write the heartbeat message */
   if (options->HeartbeatPeriod &&
       time_to.next_heartbeat <= now) {
@@ -2240,10 +2231,20 @@ run_main_loop_once(void)
 
   update_approx_time(time(NULL));
 
+  // XXX: I'm not sure but I think EVLOOP_ONCE should also be running
+  // at least if we have alarms waiting to fire, and maybe just always
+  //
+  // If so, probs best to make the comparison against a Tor with EVLOOP_ONCE always on too
+  called_loop_once = 1;
+
+  quux_event_base_loop_before();
+
   /* poll until we have an event, or the second ends, or until we have
    * some active linked connections to trigger events for. */
   loop_result = event_base_loop(tor_libevent_get_base(),
                                 called_loop_once ? EVLOOP_ONCE : 0);
+
+  quux_event_base_loop_after();
 
   /* let catch() handle things like ^c, and otherwise don't worry about it */
   if (loop_result < 0) {

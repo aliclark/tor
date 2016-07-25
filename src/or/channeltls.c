@@ -395,6 +395,7 @@ tor_UTPSendToProc(void *userdata, const byte *bytes, size_t len,
   tor_assert(utp_queue_tail);
   tor_assert(utp_queue_head);
   if (!utp_write_event) {
+    // FIXME: don't do this, just write.
     utp_write_event = tor_event_new(tor_libevent_get_base(), utp_listener,
                                     EV_WRITE|EV_PERSIST,
                                     &utp_write_callback, NULL);
@@ -585,13 +586,18 @@ channel_tls_connect(const tor_addr_t *addr, uint16_t port,
   log_debug(LD_CHANNEL,
            "Trying uTP connection to %s", addr_str);
   tlschan->utp = UTP_Create(tor_UTPSendToProc, tlschan,
-                            (const struct sockaddr*)&sin, sizeof(sin), &log_utp);
+                            (const struct sockaddr*)&sin, sizeof(sin));
   tlschan->utp_write_buf = buf_new();
   tlschan->utp_read_buf = buf_new();
   tlschan->utp_sent_id = 0;
   tlschan->utp_is_dummy = 0;
   UTP_SetCallbacks(tlschan->utp, &tor_UTPFunctionTable, (void *)tlschan);
   UTP_Connect(tlschan->utp);
+
+  quux_conn peer = quux_peer((struct sockaddr*) &addr);
+  quux_stream stream = quux_connect(peer, quic_chan_writeable, quic_chan_readable);
+  quux_write_please(stream);
+  quux_set_context(stream, tlschan);
 
   log_debug(LD_CHANNEL,
             "Got orconn %p for channel with global id " U64_FORMAT,
@@ -710,6 +716,7 @@ channel_tls_handle_incoming(or_connection_t *orconn)
   /* Link the channel and orconn to each other */
   tlschan->conn = orconn;
   orconn->chan = tlschan;
+  // Nb. tlschan->stream and others remain null at this point from malloc_zero
 
   if (is_local_addr(&(TO_CONN(orconn)->addr))) {
     log_debug(LD_CHANNEL,
@@ -1179,23 +1186,30 @@ channel_tls_num_cells_writeable_method(channel_t *chan)
   return (int)n;
 }
 
+/** Extract and return SSL session key to be used as connection
+ * identifier in the associated uTP connection. */
+void
+tor_tls_copy_master_key(tor_tls_t *tls, unsigned char *master_key)
+{
+  SSL_SESSION *session = SSL_get_session(tls->ssl);
+  memcpy(master_key, session->master_key, session->master_key_length);
+  if (session->master_key_length < SSL_MAX_MASTER_KEY_LENGTH) {
+    memset(master_key + session->master_key_length, 0, SSL_MAX_MASTER_KEY_LENGTH - session->master_key_length);
+  }
+}
+
 /** Send uTP connection ID as first SSL_MAX_MASTER_KEY_LENGTH bytes over
  * a uTP connection.  The connection ID is simply the SSL session key. */
 static void
 channel_tls_send_utp_id(channel_tls_t *tlschan)
 {
-  tor_tls_t *tls;
-  unsigned char master_key[SSL_MAX_MASTER_KEY_LENGTH];
-  char hex_master_key[SSL_MAX_MASTER_KEY_LENGTH * 2 + 1];
-
   if (tlschan->utp_sent_id)
     return;
 
-  tls = tlschan->conn->tls;
+  tor_tls_t *tls = tlschan->conn->tls;
+  unsigned char master_key[SSL_MAX_MASTER_KEY_LENGTH];
   tor_tls_copy_master_key(tls, master_key);
-  base16_encode(hex_master_key, sizeof(hex_master_key),
-                (char *)master_key, SSL_MAX_MASTER_KEY_LENGTH);
-  log_debug(LD_CHANNEL, "Sending uTP connection ID %s", hex_master_key);
+  log_debug(LD_CHANNEL, "Sending uTP connection ID");
 
   write_to_buf((char *)master_key, SSL_MAX_MASTER_KEY_LENGTH,
                tlschan->utp_write_buf);
@@ -1219,23 +1233,36 @@ channel_tls_write_cell_method(channel_t *chan, cell_t *cell)
   tor_assert(cell);
 
   if (tlschan->conn) {
-#if 1
     packed_cell_t networkcell;
     size_t cell_network_size = get_cell_network_size(chan->wide_circ_ids);
     channel_tls_send_utp_id(tlschan);
-    /* Write the cell to uTP */
     cell_pack(&networkcell, cell, tlschan->conn->wide_circ_ids);
     write_to_buf(networkcell.body, cell_network_size, tlschan->utp_write_buf);
+
+    // NEW
+    // If there is cached data on the cell outbuf, that indicates we're blocked.
+    // In that case make a note of the fact on the tlschan,
+    // then return 0 to indicate this cell should be queued.
+    //
+    // Else write the cell.
+    // If the cell is only partially written, we'll still return 1 because it's a binary thing.
+    // The rest of the cell should be stowed away, and we can expect the stream will
+    // give us a callback when it is ready for writing again.
+    //
+    // If we get a callback and are able to flush all of the buffer out completely, at that point
+    // we can call channel_flush_cells, which will try to also write out any that were queued.
+
+
     UTP_Write(tlschan->utp, buf_datalen(tlschan->utp_write_buf));
+    quux_write(tlschan->stream);
+
     log_debug(LD_CHANNEL, "Asked to write cell uTP %lu bytes (%lu)",
         cell_network_size, buf_datalen(tlschan->utp_write_buf));
 
     /* Touch the channel's active timestamp if there is one */
     if (tlschan->conn->chan)
       channel_timestamp_active(TLS_CHAN_TO_BASE(tlschan->conn->chan));
-#else
-    connection_or_write_cell_to_buf(cell, tlschan->conn);
-#endif
+
     ++written;
   } else {
     log_info(LD_CHANNEL,

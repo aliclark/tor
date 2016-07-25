@@ -51,7 +51,6 @@ typedef struct tor_x509_cert_t tor_x509_cert_t;
   case TOR_TLS_ERROR_IO
 
 #define TOR_TLS_IS_ERROR(rv) ((rv) < TOR_TLS_CLOSE)
-void tor_tls_copy_master_key(tor_tls_t *tls, unsigned char *master_key);
 const char *tor_tls_err_to_string(int err);
 void tor_tls_get_state_description(tor_tls_t *tls, char *buf, size_t sz);
 
