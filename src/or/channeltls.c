@@ -821,8 +821,8 @@ channel_tls_num_cells_writeable_method(channel_t *chan)
 /*
  * count must be <= CELL_MAX_NETWORK_SIZE
  *
- * Return 1 if there was no buffer and we managed to write it all
- * Return 0 if there was no buffer but we only achieved partial write
+ * Return  1 if there was no buffer and we managed to write it all
+ * Return  0 if there was no buffer but we only achieved partial write
  * Return -1 is there was already a buffer; the write is completely rejected
  */
 int streamcirc_attempt_write(streamcirc_t* sctx, const uint8_t* src, size_t count) {
@@ -965,6 +965,9 @@ channel_tls_get_or_create_streamcirc(channel_tls_t *tlschan, circid_t circ_id, q
       quux_set_stream_context(stream, sctx);
       sctx->stream = stream;
 
+      // kick the reader into action; should read nothing for the time being
+      streamcirc_continue_read(stream);
+
       log_debug(LD_CHANNEL, "Sending QUIC connection ID");
       // Write the secret along the stream to make sure the other end knows who we are.
       // If the write is incomplete then we'll cause the cell to be buffered.
@@ -1022,31 +1025,21 @@ channel_tls_write_cell_method(channel_t *chan, cell_t *cell)
     }
 
     cell_pack(&networkcell, cell, tlschan->conn->wide_circ_ids);
-    write_to_buf(networkcell.body, cell_network_size, tlschan->utp_write_buf);
 
-    // NEW
-    // If there is cached data on the cell outbuf, that indicates we're blocked.
-    // In that case make a note of the fact on the tlschan,
-    // then return 0 to indicate this cell should be queued.
-    //
-    // Else write the cell.
-    // If the cell is only partially written, we'll still return 1 because it's a binary thing.
-    // The rest of the cell should be stowed away, and we can expect the stream will
-    // give us a callback when it is ready for writing again.
-    //
-    // If we get a callback and are able to flush all of the buffer out completely, at that point
-    // we can call channel_flush_cells, which will try to also write out any that were queued.
+    int wrote = streamcirc_attempt_write(sctx, networkcell.body, cell_network_size);
 
+    log_debug(LD_CHANNEL, "Asked to write cell QUIC %lu bytes, status %d", cell_network_size, wrote);
 
-    UTP_Write(tlschan->utp, buf_datalen(tlschan->utp_write_buf));
-    quux_write(tlschan->stream);
+    if (wrote < 0) {
+      return 0;
+    }
 
-    log_debug(LD_CHANNEL, "Asked to write cell uTP %lu bytes (%lu)",
-        cell_network_size, buf_datalen(tlschan->utp_write_buf));
-
+    // By the function comment it sounds like this only relates to standard conns
+#if 0
     /* Touch the channel's active timestamp if there is one */
     if (tlschan->conn->chan)
       channel_timestamp_active(TLS_CHAN_TO_BASE(tlschan->conn->chan));
+#endif
 
     ++written;
   } else {
@@ -1062,7 +1055,6 @@ channel_tls_write_cell_method(channel_t *chan, cell_t *cell)
 static uint32_t normal_get_uint32(uint8_t* src) {
   return (src[0] << 24) | (src[1] << 16) | (src[2] << 8) | src[3];
 }
-
 static uint16_t normal_get_uint16(uint8_t* src) {
   return (src[0] << 8) | src[1];
 }
@@ -1086,7 +1078,6 @@ channel_tls_write_packed_cell_method(channel_t *chan,
   tor_assert(packed_cell);
 
   if (tlschan->conn) {
-#if 1
     int wide_circ_ids = tlschan->conn->wide_circ_ids;
     int circ_id_len = get_circ_id_size(wide_circ_ids);
 
@@ -1103,19 +1094,13 @@ channel_tls_write_packed_cell_method(channel_t *chan,
       return 0;
     }
 
-    write_to_buf(packed_cell->body, cell_network_size, tlschan->utp_write_buf);
+    int wrote = streamcirc_attempt_write(sctx, packed_cell->body, cell_network_size);
 
+    log_debug(LD_CHANNEL, "Asked to write packed cell QUIC %lu bytes, status %d", cell_network_size, wrote);
 
-    UTP_Write(tlschan->utp, buf_datalen(tlschan->utp_write_buf));
-
-
-
-    log_debug(LD_CHANNEL, "Asked to write packed cell uTP %lu bytes (%lu)",
-        cell_network_size, buf_datalen(tlschan->utp_write_buf));
-#else
-    connection_write_to_buf(packed_cell->body, cell_network_size,
-                            TO_CONN(tlschan->conn));
-#endif
+    if (wrote < 0) {
+      return 0;
+    }
 
     /* This is where the cell is finished; used to be done from relay.c */
     packed_cell_free(packed_cell);
@@ -1147,33 +1132,38 @@ channel_tls_write_var_cell_method(channel_t *chan, var_cell_t *var_cell)
   tor_assert(var_cell);
 
   if (tlschan->conn) {
-#if 1
-    int n;
-    char hdr[VAR_CELL_MAX_HEADER_SIZE];
-
     streamcirc_t* sctx = channel_tls_get_streamcirc(tlschan, var_cell->circ_id);
     if (!sctx) {
       sctx->tlschan->needs_flush = 1;
       return 0;
     }
 
-    n = var_cell_pack_header(var_cell, hdr, tlschan->conn->wide_circ_ids);
-    write_to_buf(hdr, n, tlschan->utp_write_buf);
-    write_to_buf((char*)var_cell->payload, var_cell->payload_len,
-                 tlschan->utp_write_buf);
+    char buf[CELL_MAX_NETWORK_SIZE];
+    int n = var_cell_pack_header(var_cell, buf, tlschan->conn->wide_circ_ids);
+    int total_len = (unsigned long)n + var_cell->payload_len;
 
+    if (total_len > CELL_MAX_NETWORK_SIZE) {
+      // Not supported yet
+      tor_assert(0);
+    }
 
-    UTP_Write(tlschan->utp, buf_datalen(tlschan->utp_write_buf));
+    // using a local buf because 'streamcirc_attempt_write' only
+    // supports one write attempt per cell
+    memcpy(buf + n, var_cell->payload, var_cell->payload_len);
 
-    log_debug(LD_CHANNEL, "Asked to write var cell uTP %lu bytes (%lu)",
-              (unsigned long)n + var_cell->payload_len,
-              buf_datalen(tlschan->utp_write_buf));
+    int wrote = streamcirc_attempt_write(sctx, buf, total_len);
 
+    log_debug(LD_CHANNEL, "Asked to write var cell QUIC %lu bytes, status %d", total_len, wrote);
+
+    if (wrote < 0) {
+      return 0;
+    }
+
+    // By the function comment it sounds like this only relates to standard conns
+#if 0
     /* Touch the channel's active timestamp if there is one */
     if (tlschan->conn->chan)
       channel_timestamp_active(TLS_CHAN_TO_BASE(tlschan->conn->chan));
-#else
-    connection_or_write_var_cell_to_buf(var_cell, tlschan->conn);
 #endif
     ++written;
   } else {
@@ -1288,21 +1278,6 @@ channel_tls_handle_state_change_on_orconn(channel_tls_t *chan,
      * CHANNEL_STATE_MAINT on this.
      */
     channel_change_state(base_chan, CHANNEL_STATE_OPEN);
-    log_debug(LD_CHANNEL, "Maybe handling uTP cells and varcells now,"
-              "because we're done handshaking on tlschan %p.", chan);
-
-    // Client reads will have been paused since creation at this point
-    // (when we go unmultiplex the streams won't even be created by now)
-
-    // For the listener's streams, they'
-    quux_read_please(chan->stream);
-
-    if (chan->want_read_after_handshake) {
-      quux_read_please(chan->stream);
-    }
-
-    // FIXME: do stuff
-    quux_write_please(stream);
 
     /* We might have just become writeable; check and tell the scheduler */
     if (connection_or_num_cells_writeable(conn) > 0) {
@@ -1414,9 +1389,8 @@ channel_tls_handle_cell(cell_t *cell, or_connection_t *conn)
   if (conn->base_.state == OR_CONN_STATE_OR_HANDSHAKING_V3)
     or_handshake_state_record_cell(conn, conn->handshake_state, cell, 1);
 
-  log_debug(LD_PROTOCOL, "Received a cell with command %s on chan %p, "
-            "uTP conn %p.",
-            cell_command_to_string(cell->command), chan, chan->utp);
+  log_debug(LD_PROTOCOL, "Received a cell with command %s on chan %p",
+            cell_command_to_string(cell->command), chan);
 
   switch (cell->command) {
     case CELL_PADDING:
@@ -1508,9 +1482,8 @@ channel_tls_handle_var_cell(var_cell_t *var_cell, or_connection_t *conn)
   if (TO_CONN(conn)->marked_for_close)
     return;
 
-  log_debug(LD_PROTOCOL, "Received a var cell with command %s on chan %p, "
-            "uTP conn %p.",
-            cell_command_to_string(var_cell->command), chan, chan->utp);
+  log_debug(LD_PROTOCOL, "Received a var cell with command %s on chan %p",
+            cell_command_to_string(var_cell->command), chan);
 
   switch (TO_CONN(conn)->state) {
     case OR_CONN_STATE_OR_HANDSHAKING_V2:
