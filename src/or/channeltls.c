@@ -204,7 +204,7 @@ void streamcirc_continue_read(quux_stream stream) {
   size_t cell_network_size = get_cell_network_size(wide_circ_ids);
   uint8_t* read_buf = sctx->read_cell_buf;
 
-  do {
+  for (;;) {
     int bytes_read = quux_read(stream, read_buf + sctx->read_cell_pos, cell_network_size - sctx->read_cell_pos);
 
     if (!bytes_read) {
@@ -228,8 +228,7 @@ void streamcirc_continue_read(quux_stream stream) {
 
     log_debug(LD_CHANNEL, "Handling QUIC cell");
     channel_tls_handle_cell(&cell, tlschan->conn);
-
-  } while (sctx->read_cell_pos < cell_network_size);
+  }
 }
 
 static streamcirc_t*
