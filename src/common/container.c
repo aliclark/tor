@@ -1052,6 +1052,8 @@ smartlist_uniq_digests256(smartlist_t *sl)
 DEFINE_MAP_STRUCTS(strmap_t, char *key, strmap_);
 DEFINE_MAP_STRUCTS(digestmap_t, char key[DIGEST_LEN], digestmap_);
 DEFINE_MAP_STRUCTS(digest256map_t, uint8_t key[DIGEST256_LEN], digest256map_);
+DEFINE_MAP_STRUCTS(tlssecretsmap_t, uint8_t key[TLSSECRETS_LEN], tlssecretsmap_);
+DEFINE_MAP_STRUCTS(streamcircmap_t, circid_t key, streamcircmap_);
 
 /** Helper: compare strmap_entry_t objects by key value. */
 static INLINE int
@@ -1096,6 +1098,32 @@ digest256map_entry_hash(const digest256map_entry_t *a)
   return (unsigned) siphash24g(a->key, DIGEST256_LEN);
 }
 
+static INLINE int
+tlssecretsmap_entries_eq(const tlssecretsmap_entry_t *a,
+                        const tlssecretsmap_entry_t *b)
+{
+  return !memcmp(a->key, b->key, TLSSECRETS_LEN);
+}
+
+static INLINE unsigned int
+tlssecretsmap_entry_hash(const tlssecretsmap_entry_t *a)
+{
+  return ((unsigned int*)a->key)[0];
+}
+
+static INLINE int
+streamcircmap_entries_eq(const streamcircmap_entry_t *a,
+                        const streamcircmap_entry_t *b)
+{
+  return a->key != b->key;
+}
+
+static INLINE unsigned int
+streamcircmap_entry_hash(const streamcircmap_entry_t *a)
+{
+  return a->key;
+}
+
 HT_PROTOTYPE(strmap_impl, strmap_entry_t, node, strmap_entry_hash,
              strmap_entries_eq)
 HT_GENERATE2(strmap_impl, strmap_entry_t, node, strmap_entry_hash,
@@ -1113,6 +1141,20 @@ HT_GENERATE2(digest256map_impl, digest256map_entry_t, node,
              digest256map_entry_hash,
              digest256map_entries_eq, 0.6, tor_reallocarray_, tor_free_)
 
+HT_PROTOTYPE(tlssecretsmap_impl, tlssecretsmap_entry_t, node,
+             tlssecretsmap_entry_hash,
+             tlssecretsmap_entries_eq)
+HT_GENERATE2(tlssecretsmap_impl, tlssecretsmap_entry_t, node,
+             tlssecretsmap_entry_hash,
+             tlssecretsmap_entries_eq, 0.6, tor_reallocarray_, tor_free_)
+
+HT_PROTOTYPE(streamcircmap_impl, streamcircmap_entry_t, node,
+             streamcircmap_entry_hash,
+             streamcircmap_entries_eq)
+HT_GENERATE2(streamcircmap_impl, streamcircmap_entry_t, node,
+             streamcircmap_entry_hash,
+             streamcircmap_entries_eq, 0.6, tor_reallocarray_, tor_free_)
+
 static INLINE void
 strmap_entry_free(strmap_entry_t *ent)
 {
@@ -1126,6 +1168,16 @@ digestmap_entry_free(digestmap_entry_t *ent)
 }
 static INLINE void
 digest256map_entry_free(digest256map_entry_t *ent)
+{
+  tor_free(ent);
+}
+static INLINE void
+tlssecretsmap_entry_free(tlssecretsmap_entry_t *ent)
+{
+  tor_free(ent);
+}
+static INLINE void
+streamcircmap_entry_free(streamcircmap_entry_t *ent)
 {
   tor_free(ent);
 }
@@ -1146,6 +1198,17 @@ digest256map_assign_tmp_key(digest256map_entry_t *ent, const uint8_t *key)
   memcpy(ent->key, key, DIGEST256_LEN);
 }
 static INLINE void
+tlssecretsmap_assign_tmp_key(tlssecretsmap_entry_t *ent, const uint8_t *key)
+{
+  memcpy(ent->key, key, TLSSECRETS_LEN);
+}
+static INLINE void
+streamcircmap_assign_tmp_key(streamcircmap_entry_t *ent, circid_t key)
+{
+  ent->key = key;
+}
+
+static INLINE void
 strmap_assign_key(strmap_entry_t *ent, const char *key)
 {
   ent->key = tor_strdup(key);
@@ -1159,6 +1222,16 @@ static INLINE void
 digest256map_assign_key(digest256map_entry_t *ent, const uint8_t *key)
 {
   memcpy(ent->key, key, DIGEST256_LEN);
+}
+static INLINE void
+tlssecretsmap_assign_key(tlssecretsmap_entry_t *ent, const uint8_t *key)
+{
+  memcpy(ent->key, key, TLSSECRETS_LEN);
+}
+static INLINE void
+streamcircmap_assign_key(streamcircmap_entry_t *ent, circid_t key)
+{
+  ent->key = key;
 }
 
 /**
@@ -1378,6 +1451,8 @@ digest256map_assign_key(digest256map_entry_t *ent, const uint8_t *key)
 IMPLEMENT_MAP_FNS(strmap_t, char *, strmap)
 IMPLEMENT_MAP_FNS(digestmap_t, char *, digestmap)
 IMPLEMENT_MAP_FNS(digest256map_t, uint8_t *, digest256map)
+IMPLEMENT_MAP_FNS(tlssecretsmap_t, uint8_t *, tlssecretsmap)
+IMPLEMENT_MAP_FNS(streamcircmap_t, circid_t, streamcircmap)
 
 /** Same as strmap_set, but first converts <b>key</b> to lowercase. */
 void *

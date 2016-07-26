@@ -358,6 +358,9 @@ char *smartlist_join_strings2(smartlist_t *sl, const char *join,
   int prefix##iter_done(prefix##iter_t *iter);                          \
   void prefix##assert_ok(const maptype *map)
 
+// yuck, need to forward declare this here
+typedef uint32_t circid_t;
+
 /* Map from const char * to void *. Implemented with a hash table. */
 DECLARE_MAP_FNS(strmap_t, const char *, strmap_);
 /* Map from const char[DIGEST_LEN] to void *. Implemented with a hash table. */
@@ -365,6 +368,8 @@ DECLARE_MAP_FNS(digestmap_t, const char *, digestmap_);
 /* Map from const uint8_t[DIGEST256_LEN] to void *. Implemented with a hash
  * table. */
 DECLARE_MAP_FNS(digest256map_t, const uint8_t *, digest256map_);
+DECLARE_MAP_FNS(tlssecretsmap_t, const uint8_t *, tlssecretsmap_);
+DECLARE_MAP_FNS(streamcircmap_t, circid_t, streamcircmap_);
 
 #undef DECLARE_MAP_FNS
 

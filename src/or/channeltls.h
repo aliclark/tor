@@ -25,40 +25,40 @@
 
 #ifdef TOR_CHANNEL_INTERNAL_
 
+struct streamcirc_s;
+
 struct channel_tls_s {
   /* Base channel_t struct */
   channel_t base_;
   /* or_connection_t pointer */
   or_connection_t *conn;
 
-  struct UTPSocket *utp;
-  buf_t *utp_write_buf;
-  buf_t *utp_read_buf;
-  int utp_sent_id:1;
-  int utp_is_dummy:1;
+  streamcircmap_t *streamcircmap;
+  quux_stream peer;
+  quux_stream control_stream;
 
-  quux_stream stream;
-  // used to register if a QUIC read callback came in too early
-  int want_read_after_handshake;
+  uint8_t tlssecrets[TLSSECRETS_LEN];
+  // used by the client code during the initial control stream send
+  int cs_secret_pos;
 
-  // Nb. these two cells are used for read-side buffering.
-  char cell_buf[CELL_MAX_NETWORK_SIZE];
-  int cell_pos;
-  buf_t* var_cell_buf;
-  int in_var_cell:1;
-
-
-  // For the cell write what do we need
-
+  // unfortunately the flush API is not stream-centric (yet?)
+  int needs_flush:1;
 };
 
-typedef struct utp_packet_t {
-  struct utp_packet_t *next;
-  const char *bytes;
-  size_t len;
-  const struct sockaddr *to;
-  socklen_t tolen;
-} utp_packet_t;
+typedef struct streamcirc_s {
+  struct channel_tls_s* tlschan;
+  quux_stream stream;
+
+  // store reads of a partial cell from quic
+  uint8_t read_cell_buf[CELL_MAX_NETWORK_SIZE];
+  int read_cell_pos;
+
+  // if the quic stream is blocked we may need to park a partial cell here
+  // (the write_cell API is boolean around cell writes)
+  uint8_t write_cell_buf[CELL_MAX_NETWORK_SIZE];
+  int write_cell_pos;
+
+} streamcirc_t;
 
 #endif /* TOR_CHANNEL_INTERNAL_ */
 

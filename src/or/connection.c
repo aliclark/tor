@@ -61,8 +61,6 @@
 #include <sys/un.h>
 #endif
 
-#include <openssl/ssl.h>
-
 static connection_t *connection_listener_new(
                                const struct sockaddr *listensockaddr,
                                socklen_t listensocklen, int type,
@@ -2418,52 +2416,35 @@ retry_listener_ports(smartlist_t *old_conns,
   return r;
 }
 
+
 static quux_listener quic_listener;
 
-struct quic_listen_s {
-  channel_tls_t *tlschan;
-  int read_pos;
-  uint8_t master_key[SSL_MAX_MASTER_KEY_LENGTH];
-  //int want_write:1;
-};
+// An hmac using the tls master key. This is a sort of replay
+// of the AUTHENTICATE cell sent over the wire, but since
+// that should be confidential to just the TLS conn
+// it should be safe to use again, provided the UDP stream is also confidential
+//
+// TODO: also want to delete entries once the connection goes away
+tlssecretsmap_t *tlssecretsmap = tlssecretsmap_new();
 
-/*
- * FIXME: Nb. The scheduler will be trying to do its thing on the TLS connection,
- * so some additional work is needed to make it work here.
- *
- * To get equivalent comparison, may need to compare with the scheduler disabled.
- */
-void quic_accept(quux_stream stream) {
-  printf("server_accept\n");
 
-  struct quic_listen_s* arg = calloc(1, sizeof(struct quic_listen_s));
-  quux_set_context(stream, arg);
+#if 0
 
-  quux_read_please(stream);
-}
-
-/*
- * XXX: 'channel_tls_handle_var_cell' doesn't directly give feedback
- * to tell us to stop and start reading cells off the network
- * if the queues ahead are getting blocked.
- *
- * I think this might be done some other place by taking the TLS socket
- * of the reading or active list, but that wouldn't help in our case
- * because we're using a different socket.
- *
- * Perhaps need to look into that bit of code and get it to do more stuff.
- */
-void quic_readable_tlschan(quux_stream stream, channel_tls_t *tlschan) {
+// using simpler code below instead for now
+void quic_readable_tlschan_defunct(quux_stream stream, channel_tls_t *tlschan) {
 
   // A lot of this gunk is down to wanting to avoid
   // the overhead of write_to_buf in normal operation.
   // That might be misguided, could do with some benchmark comparison.
+  //
+  // I think all variable cells happen before state OPEN.
+  // Can we just leave out that functionality?
 
-  const int wide_circ_ids = tlschan->conn->wide_circ_ids;
-  const int circ_id_len = get_circ_id_size(wide_circ_ids);
-  const unsigned var_header_len = get_var_cell_header_size(wide_circ_ids);
+  int wide_circ_ids = tlschan->conn->wide_circ_ids;
+  int circ_id_len = get_circ_id_size(wide_circ_ids);
+  unsigned var_header_len = get_var_cell_header_size(wide_circ_ids);
   size_t cell_network_size = get_cell_network_size(wide_circ_ids);
-  int linkproto = 3;
+  int linkproto = 4;
 
   for (;;) {
     if (tlschan->in_var_cell) {
@@ -2552,60 +2533,68 @@ void quic_readable_tlschan(quux_stream stream, channel_tls_t *tlschan) {
     cell_unpack(&cell, tlschan->cell_buf, wide_circ_ids);
     tlschan->cell_pos = 0;
     channel_tls_handle_cell(&cell, tlschan->conn);
-}
+  }
 
-void quic_listener_readable(quux_stream stream) {
-  struct quic_listen_s* arg = quux_get_context(stream);
-
-  if (!arg->tlschan) {
-    while (arg.read_pos < sizeof(arg.master_key)) {
-      int bytes_read = quux_read(stream, arg.master_key + arg.read_pos, sizeof(arg.master_key) - arg.read_pos);
-      if (!bytes_read) {
-        return;
-      }
-      arg.read_pos += bytes_read;
-    }
-
+  // keeping this old code around for a while too
     smartlist_t *conns = get_connection_array();
-    channel_tls_t *tlschan = NULL;
-
+    // Maintaining a hash map would probably be a better choice performance-wise
+    // maybe not so smart for security
     SMARTLIST_FOREACH(conns, connection_t*, conn, {
       if (conn->type != CONN_TYPE_OR) {
         continue;
       }
 
-      // This is assumed - we must read key off the wire before knowing the matching TLS conn
-      // we could allow checking against conn-specific keys, but could
-      // an attacker force us to use a very small key that also matches other conns?
-      if (((or_connection_t*)conn)->tls->ssl->session->master_key_length != SSL_MAX_MASTER_KEY_LENGTH) {
-        log_debug(LD_CHANNEL, "Bad: Skipping tlschan candidate with short master key!");
-        continue;
-      }
       SSL_SESSION *session = SSL_get_session(((or_connection_t*)conn)->tls->ssl);
 
-      if (!memcmp(session->master_key, arg.master_key, SSL_MAX_MASTER_KEY_LENGTH)) {
+      if (!memcmp(session->master_key, arg.tlssecrets, 32)) {
         tlschan = ((or_connection_t*)conn)->chan;
         break;
       }
     });
 
-    tor_assert(tlschan);
+}
+#endif
 
-    if (TO_CONN(tlschan->conn)->state != OR_CONN_STATE_OPEN) {
-      log_debug(LD_CHANNEL, "Not handling QUIC cell or varcell yet, "
-                "because we're not done handshaking on tlschan %p.",
-                tlschan);
 
-      // FIXME: we won't get callbacks for this one anymore.
-      // We should append the nascent stream to some list on the tlschan
-      // and have tlschans run through their list when they finish handshake
-      tlschan->want_read_after_handshake = 1;
+
+void quic_accept_readable_sctx(quux_stream stream, streamcirc_t* sctx) {
+
+
+}
+
+void quic_accept_readable(quux_stream stream) {
+  streamcirc_t* sctx = quux_get_context(stream);
+
+  if (!sctx->tlschan) {
+    while (sctx->read_cell_pos < TLSSECRETS_LEN) {
+      int bytes_read = quux_read(stream, sctx->read_cell_buf + sctx->read_cell_pos, TLSSECRETS_LEN - sctx->read_cell_pos);
+      if (!bytes_read) {
+        return;
+      }
+      sctx->read_cell_pos += bytes_read;
+    }
+
+    channel_tls_t *tlschan = tlssecretsmap_get(tlssecretsmap, sctx->read_cell_buf);
+    if (!tlschan) {
+      log_debug(LD_CHANNEL, "Got a weird tlssecret on stream, someone's playing shenanigans");
       return;
     }
 
-    // This would have been initialised null in the TLS accept code
-    tlschan->stream = stream;
-    arg->tlschan = tlschan;
+    sctx->read_cell_pos = 0;
+
+    // For the listener-side - this would have been initialised to null in the TLS accept code
+    // We pass through this code for each new inbound stream but only need to set it on the first
+    if (!tlschan->peer) {
+      tlschan->peer = quux_get_peer(stream);
+      if (sctx->tlschan->needs_flush) {
+        // This can happen if we tried to write cells out before the first QUIC stream arrived
+        // in that case there would be no way to write the cells so they've been queued
+        sctx->tlschan->needs_flush = 0;
+        channel_flush_cells(TLS_CHAN_TO_BASE(sctx->tlschan));
+      }
+    }
+
+    sctx->tlschan = tlschan;
 
     // because we may have already got the write callback while
     // still reading the TLS key
@@ -2615,17 +2604,43 @@ void quic_listener_readable(quux_stream stream) {
     }
 #endif
 
-    // continue reading cells as normal
+    // continue reading the first cell, which will identify the circuit
   }
 
-  quic_readable_tlschan(stream, arg->tlschan);
+  channel_tls_t *tlschan = sctx->tlschan;
+  int wide_circ_ids = tlschan->conn->wide_circ_ids;
+  size_t cell_network_size = get_cell_network_size(wide_circ_ids);
+
+  while (sctx->read_cell_pos < cell_network_size) {
+    int bytes_read = quux_read(stream, sctx->read_cell_buf + sctx->read_cell_pos, cell_network_size - sctx->read_cell_pos);
+    if (!bytes_read) {
+      return;
+    }
+    sctx->read_cell_pos += bytes_read;
+  }
+
+  channel_timestamp_active(TLS_CHAN_TO_BASE(tlschan));
+  circuit_build_times_network_is_live(get_circuit_build_times_mutable());
+
+  log_debug(LD_CHANNEL, "Handling QUIC cell");
+  cell_t cell;
+  cell_unpack(&cell, sctx->read_cell_buf, wide_circ_ids);
+  sctx->read_cell_pos = 0;
+
+  // now we have the first cell we can continue using the normal read cell logic
+  quux_set_readable_cb(stream, streamcirc_continue_read);
+  quux_set_writeable_cb(stream, streamcirc_continue_write);
+
+  // Associate the stream to this circuit on the tlschan, so the write_cell code can find it
+  streamcirc_associate_sctx(tlschan, cell.circ_id, sctx);
+
+  channel_tls_handle_cell(&cell, tlschan->conn);
+
+  // continue with normal cell processing
+  streamcirc_continue_read(stream);
 }
 
-void quic_chan_readable(quux_stream stream) {
-  struct quic_listen_s* arg = quux_get_context(stream);
-  quic_readable_tlschan(stream, arg->tlschan);
-}
-
+#if 0
 // Writeables will mainly happen if we've attempted a cell write and got 0.
 // At that point we would have cached the remnants of the cell.
 //
@@ -2653,9 +2668,41 @@ void quic_listener_writeable(quux_stream stream) {
 }
 
 void quic_chan_writeable(quux_stream stream) {
-  struct quic_listen_s* arg = quux_get_context(stream);
-  quic_writeable_tlschan(stream, arg->tlschan);
+  channel_tls_t* tlschan = quux_get_context(stream);
+  quic_writeable_tlschan(stream, tlschan);
 }
+#endif
+
+/**
+ * Used by both the connect and listen side as the starting point for accepting inbound streams.
+ */
+void quic_accept(quux_stream stream) {
+  log_debug(LD_CHANNEL, "QUIC stream accept");
+  quux_set_readable_cb(stream, quic_accept_readable);
+
+  streamcirc_t* sctx = malloc(sizeof(streamcirc_t));
+  sctx->tlschan = NULL;
+  sctx->stream = stream;
+  sctx->read_cell_pos = 0;
+  sctx->write_cell_pos = 0;
+
+  quux_set_stream_context(stream, sctx);
+
+  // Start reading off the TLS secret
+  quic_accept_readable(stream);
+
+}
+
+void quic_connected(quux_peer peer) {
+  quux_set_accept_cb(peer, quic_accept);
+}
+
+/*
+ * FIXME: Nb. The scheduler will be trying to do its thing on the TLS connection,
+ * so some additional work is needed to make it work here.
+ *
+ * To get equivalent comparison, may need to compare with the scheduler disabled.
+ */
 
 /** Open a UDP server socket on <b>port</b> and add a callback to libutp
  * to handle incoming uTP bytesfor us, which can be either new incoming
@@ -2674,7 +2721,7 @@ retry_quic_listener(uint16_t port)
   struct sockaddr_in addr = { AF_INET, htons(port), { htonl(INADDR_ANY) } };
 #endif
 
-  quic_listener = quux_listen(addr, quic_accept, quic_listener_writeable, quic_listener_readable);
+  quic_listener = quux_listen(addr, quic_connected);
 
   if (!quic_listener) {
     log_warn(LD_NET,"QUIC socket creation failed: %s",

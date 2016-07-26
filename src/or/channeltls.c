@@ -101,396 +101,6 @@ static int command_allowed_before_handshake(uint8_t command);
 static int enter_v3_handshake_with_cell(var_cell_t *cell,
                                         channel_tls_t *tlschan);
 
-static struct UTPFunctionTable tor_UTPFunctionTable = {
-  tor_UTPOnReadProc,
-  tor_UTPOnWriteProc,
-  tor_UTPGetRBSize,
-  tor_UTPOnStateChangeProc,
-  tor_UTPOnErrorProc,
-  tor_UTPOnOverheadProc
-};
-
-#define UTP_STATE_CONNECT 0
-#define UTP_STATE_WRITABLE 1
-
-static void
-log_utp(const char *fn, const char *format, ...)
-{
-  va_list ap;
-  va_start(ap,format);
-  tor_log(LOG_DEBUG, LD_CHANNEL, NULL, NULL, format, ap);
-  va_end(ap);
-}
-
-/** Process cells from the inbuf of the uTP connection associated with
- * <b>tlschan</b>; based on connection_or_process_cells_from_inbuf. */
-static int
-utp_process_cells_from_inbuf(channel_tls_t *tlschan)
-{
-  var_cell_t *var_cell;
-
-  if (!tlschan->utp_read_buf)
-    return 0; /* no buffer to read from (yet) */
-
-  while (1) {
-    /* Only process uTP cells once we're done handshaking. */
-    if (TO_CONN(tlschan->conn)->state != OR_CONN_STATE_OPEN) {
-      log_debug(LD_CHANNEL, "Not handling uTP cell or varcell yet, "
-                "because we're not done handshaking on tlschan %p.",
-                tlschan);
-      return 0; /* not yet. */
-    }
-
-    log_debug(LD_OR,
-              TOR_SOCKET_T_FORMAT": starting, inbuf_datalen %d "
-              "(%d pending in tls object).",
-              tlschan->conn->base_.s,(int)connection_get_inbuf_len(TO_CONN(tlschan->conn)),
-              tor_tls_get_pending_bytes(tlschan->conn->tls));
-
-    // Assume link protocol 3
-    if (fetch_var_cell_from_buf(tlschan->utp_read_buf, &var_cell, 3)) {
-      if (!var_cell)
-        return 0; /* not yet. */
-
-      /* Touch the channel's active timestamp if there is one */
-      channel_timestamp_active(TLS_CHAN_TO_BASE(tlschan));
-
-      log_debug(LD_CHANNEL, "Handling uTP varcell");
-      circuit_build_times_network_is_live(get_circuit_build_times_mutable());
-      channel_tls_handle_var_cell(var_cell, tlschan->conn);
-      var_cell_free(var_cell);
-    } else {
-      const int wide_circ_ids = tlschan->conn->wide_circ_ids;
-      size_t cell_network_size = get_cell_network_size(tlschan->conn->wide_circ_ids);
-      char buf[CELL_MAX_NETWORK_SIZE];
-      cell_t cell;
-      if (buf_datalen(tlschan->utp_read_buf)
-          < cell_network_size) /* whole response available? */
-        return 0; /* not yet */
-
-      channel_timestamp_active(TLS_CHAN_TO_BASE(tlschan));
-
-      circuit_build_times_network_is_live(get_circuit_build_times_mutable());
-      fetch_from_buf(buf, cell_network_size, tlschan->utp_read_buf);
-
-      /* retrieve cell info from buf (create the host-order struct from the
-       * network-order string) */
-      cell_unpack(&cell, buf, wide_circ_ids);
-
-      log_debug(LD_CHANNEL, "Handling uTP cell");
-      channel_tls_handle_cell(&cell, tlschan->conn);
-    }
-  }
-}
-
-/** Called by libutp to notify us that <b>count</b> <b>bytes</b> have been
- * read on the uTP connection associated with <b>userdata</b>.  libutp
- * has already stripped all uTP headers from these bytes.  The first
- * SSL_MAX_MASTER_KEY_LENGTH bytes on any uTP connection represent the
- * connection ID, any further bytes are tor cells or varcells. */
-void
-tor_UTPOnReadProc(void *userdata, const byte *bytes, size_t count)
-{
-  size_t len;
-  tor_tls_t *tls;
-  unsigned char master_key[SSL_MAX_MASTER_KEY_LENGTH];
-  unsigned char connection_id[SSL_MAX_MASTER_KEY_LENGTH];
-  char hex_master_key[SSL_MAX_MASTER_KEY_LENGTH * 2 + 1];
-  channel_tls_t *tlschan = (channel_tls_t *)userdata;
-  channel_tls_t *found_chan = NULL;
-  if (!tlschan || TLS_CHAN_TO_BASE(tlschan)->magic != TLS_CHAN_MAGIC) {
-    log_warn(LD_BUG, "uTP callback method has no valid userdata: %p",
-             tlschan);
-    return;
-  }
-
-  /* Write the data to a buffer */
-  /* Do we even have to do this? Can we process it directly? */
-  write_to_buf((char *)bytes, count, tlschan->utp_read_buf);
-
-  if (!tlschan->utp_is_dummy) {
-    /* Send the cells up a layer */
-    utp_process_cells_from_inbuf(tlschan);
-  } else if (buf_datalen(tlschan->utp_read_buf) >= SSL_MAX_MASTER_KEY_LENGTH) {
-    /* No connection yet but we have a connection ID */
-    smartlist_t *conns;
-    fetch_from_buf((char *)connection_id, SSL_MAX_MASTER_KEY_LENGTH,
-                   tlschan->utp_read_buf);
-    conns = get_connection_array();
-    SMARTLIST_FOREACH(conns, connection_t *, conn,
-    {
-      if (conn->type == CONN_TYPE_OR) {
-        tls = ((or_connection_t *)conn)->tls;
-        memset(hex_master_key, 0, sizeof(hex_master_key));
-        tor_tls_copy_master_key(tls, master_key);
-        base16_encode(hex_master_key, sizeof(hex_master_key),
-                      (char *)master_key, SSL_MAX_MASTER_KEY_LENGTH);
-        log_debug(LD_CHANNEL, "No connection: considering for uTP: %s",
-                  hex_master_key);
-        if (!memcmp(master_key, connection_id, SSL_MAX_MASTER_KEY_LENGTH)) {
-          log_debug(LD_CHANNEL, "uTP connection ID match: %s", hex_master_key);
-          found_chan = ((or_connection_t *)conn)->chan;
-        }
-      }
-    });
-    tor_assert(found_chan);
-    /* Swap out the dummy (hopefully this is OK to do)*/
-    found_chan->utp = tlschan->utp;
-    found_chan->utp_write_buf = buf_new();
-    found_chan->utp_read_buf = buf_new();
-    found_chan->utp_sent_id = 1;
-    found_chan->utp_is_dummy = 0;
-    /* Copy over any data that is left over */
-    len = buf_datalen(tlschan->utp_read_buf);
-    move_buf_to_buf(found_chan->utp_read_buf, tlschan->utp_read_buf, &len);
-    UTP_SetCallbacks(tlschan->utp, &tor_UTPFunctionTable, (void *)found_chan);
-    /* TODO(SJM) destroy tlschan and its buffers */
-    utp_process_cells_from_inbuf(found_chan);
-  } else {
-    log_debug(LD_CHANNEL, "No connection for uTP but no connection ID");
-  }
-
-  log_debug(LD_CHANNEL, "tor_UTPOnReadProc(" U64_FORMAT ", %p, %d)",
-            U64_PRINTF_ARG(TLS_CHAN_TO_BASE(tlschan)->global_identifier),
-            bytes, (int)count);
-}
-
-/** Called by libutp to request us to write <b>count</b> bytes to
- * <b>bytes</b> which are to be sent to the uTP connection associated with
- * <b>userdata</b>.  These bytes are not supposed to include any uTP
- * headers which libutp will add for us.  We are supposed, however, to
- * add the connection ID as the first SSL_MAX_MASTER_KEY_LENGTH bytes on
- * any uTP connection.  Any further bytes shall be tor cells or
- * varcells. */
-void
-tor_UTPOnWriteProc(void *userdata, byte *bytes, size_t count)
-{
-  channel_tls_t *tlschan = (channel_tls_t *)userdata;
-  if (!tlschan || TLS_CHAN_TO_BASE(tlschan)->magic != TLS_CHAN_MAGIC) {
-    log_warn(LD_BUG, "uTP callback method has no valid userdata: %p",
-             tlschan);
-    return;
-  }
-
-  tor_assert(buf_datalen(tlschan->utp_write_buf) >= count);
-  fetch_from_buf((char *)bytes, count, tlschan->utp_write_buf);
-
-  log_debug(LD_CHANNEL, "tor_UTPOnWriteProc(" U64_FORMAT ", %p, %d)",
-            U64_PRINTF_ARG(TLS_CHAN_TO_BASE(tlschan)->global_identifier),
-            bytes, (int)count);
-}
-
-/** Called by libutp to retrieve the number of bytes currently in the read
- * buffer of the uTP connection associated with <b>userdata</b>. */
-size_t
-tor_UTPGetRBSize(void *userdata)
-{
-  channel_tls_t *tlschan = (channel_tls_t *)userdata;
-  if (!tlschan || TLS_CHAN_TO_BASE(tlschan)->magic != TLS_CHAN_MAGIC) {
-    log_warn(LD_BUG, "uTP callback method has no valid userdata: %p",
-             tlschan);
-    return 0;
-  }
-
-  log_debug(LD_CHANNEL, "tor_UTPGetRBSize(" U64_FORMAT ")",
-            U64_PRINTF_ARG(TLS_CHAN_TO_BASE(tlschan)->global_identifier));
-
-  return buf_datalen((tlschan)->utp_read_buf);
-}
-
-/** Called by libutp to inform us that the state of the uTP connection
- * associated with <b>userdata</b> has changed to <b>state</b>.  Possible
- * states indicating that this uTP connection has become writable are
- * UTP_STATE_CONNECT and UTP_STATE_WRITABLE. */
-void
-tor_UTPOnStateChangeProc(void *userdata, int state)
-{
-  channel_tls_t *tlschan = (channel_tls_t *)userdata;
-  if (!tlschan || TLS_CHAN_TO_BASE(tlschan)->magic != TLS_CHAN_MAGIC) {
-    log_warn(LD_BUG, "uTP callback method has no valid userdata: %p",
-             tlschan);
-    return;
-  }
-
-  if (state == UTP_STATE_CONNECT || state == UTP_STATE_WRITABLE) {
-    if (buf_datalen(tlschan->utp_write_buf) > 0)
-      UTP_Write(tlschan->utp, buf_datalen(tlschan->utp_write_buf));
-  } else { /* state == UTP_STATE_EOF || state == UTP_STATE_DESTROYING */
-    log_debug(LD_CHANNEL, "uTP connection state changed to EOF "
-              "or DESTROYING; closing associated TLS connection.");
-    connection_or_close_for_error(tlschan->conn, 0);
-  }
-
-  log_debug(LD_CHANNEL, "tor_UTPOnStateChangeProc(" U64_FORMAT ", %d)",
-            U64_PRINTF_ARG(TLS_CHAN_TO_BASE(tlschan)->global_identifier),
-            state);
-}
-
-/** Called by libutp to inform us that an error with code <b>errcode</b>
- * has occurred on the uTP connection associated with <b>userdata</b>. */
-void
-tor_UTPOnErrorProc(void *userdata, int errcode)
-{
-  channel_tls_t *tlschan = (channel_tls_t *)userdata;
-  if (!tlschan || TLS_CHAN_TO_BASE(tlschan)->magic != TLS_CHAN_MAGIC) {
-    log_warn(LD_BUG, "uTP callback method has no valid userdata: %p",
-             tlschan);
-    return;
-  }
-
-  log_debug(LD_CHANNEL, "tor_UTPOnErrorProc(" U64_FORMAT ", %d)",
-            U64_PRINTF_ARG(TLS_CHAN_TO_BASE(tlschan)->global_identifier),
-            errcode);
-}
-
-/** Called by libutp to report overhead statistics for the uTP connection
- * associated with <b>userdata</b>. */
-void
-tor_UTPOnOverheadProc(void *userdata, bool send, size_t count, int type)
-{
-  channel_tls_t *tlschan = (channel_tls_t *)userdata;
-  if (!tlschan || TLS_CHAN_TO_BASE(tlschan)->magic != TLS_CHAN_MAGIC) {
-    log_warn(LD_BUG, "uTP callback method has no valid userdata: %p",
-             tlschan);
-    return;
-  }
-
-  log_debug(LD_CHANNEL, "tor_UTPOnOverheadProc(" U64_FORMAT ", %d, %d, %d)",
-            U64_PRINTF_ARG(TLS_CHAN_TO_BASE(tlschan)->global_identifier),
-            send, (int)count, type);
-}
-
-extern tor_socket_t utp_listener;
-
-static utp_packet_t *utp_queue_head = NULL, *utp_queue_tail = NULL;
-static struct event *utp_write_event = NULL;
-
-/** Called by libutp to request us to send a single UDP packet containing
- * <b>len</b> <b>bytes</b> to the IPv4 address <b>to</b> with length
- * <b>tolen</b> on behalf of the uTP connection associated with
- * <b>userdata</b>. */
-void
-tor_UTPSendToProc(void *userdata, const byte *bytes, size_t len,
-                  const struct sockaddr *to, socklen_t tolen)
-{
-  char addr_str[16];
-  utp_packet_t *packet;
-  int retval;
-  (void) userdata;
-
-  tor_inet_ntop(AF_INET, &((struct sockaddr_in*)to)->sin_addr, addr_str,
-                sizeof(addr_str));
-  packet = tor_malloc_zero(sizeof(utp_packet_t));
-  packet->bytes = tor_memdup(bytes, len);
-  packet->len = len;
-  packet->to = tor_memdup(to, tolen);
-  packet->tolen = tolen;
-  if (utp_queue_tail != NULL) {
-    utp_queue_tail->next = packet;
-    utp_queue_tail = packet;
-  } else {
-    utp_queue_head = packet;
-    utp_queue_tail = packet;
-  }
-  tor_assert(utp_queue_tail);
-  tor_assert(utp_queue_head);
-  if (!utp_write_event) {
-    // FIXME: don't do this, just write.
-    utp_write_event = tor_event_new(tor_libevent_get_base(), utp_listener,
-                                    EV_WRITE|EV_PERSIST,
-                                    &utp_write_callback, NULL);
-    retval = event_add(utp_write_event, NULL);
-    log_debug(LD_NET, "Added uTP write event: %d, %d",
-              utp_write_event!=NULL, retval);
-  }
-
-  log_debug(LD_CHANNEL, "tor_UTPSendToProc(%p, %d, %s)",
-            bytes, (int)len, addr_str);
-}
-
-void
-utp_write_callback(evutil_socket_t fd, short what, void *arg)
-{
-  utp_packet_t *packet;
-  ssize_t sent;
-  (void) fd;
-  (void) what;
-  (void) arg;
-  while (utp_queue_head) {
-    packet = utp_queue_head;
-    sent = sendto(utp_listener, packet->bytes, packet->len, 0, packet->to,
-                  packet->tolen);
-    if (sent <= 0) {
-      log_debug(LD_CHANNEL, "Could not send uTP packet: %s",
-                strerror(errno));
-      break;
-    }
-    utp_queue_head = packet->next;
-    if (!utp_queue_head)
-      utp_queue_tail = NULL;
-    tor_assert((size_t) sent == packet->len);
-    log_debug(LD_CHANNEL, "Wrote %d uTP bytes.", (int) sent);
-    tor_free(packet);
-  }
-  if (!utp_queue_head && utp_write_event) {
-    event_del(utp_write_event);
-    tor_free(utp_write_event);
-    utp_write_event = NULL;
-    log_debug(LD_NET, "Removed uTP write event");
-  }
-}
-
-/** Called by libutp to inform us about a new incoming uTP connection
- * on uTP socket <b>s</b>. */
-void
-tor_UTPGotIncomingConnection(void *userdata, struct UTPSocket* s)
-{
-  static int guid_counter = 0x1000;
-  channel_tls_t *new_t;
-  (void) userdata;
-
-  // XXX(SJM) leak
-  new_t = tor_malloc_zero(sizeof(channel_tls_t));
-  TLS_CHAN_TO_BASE(new_t)->magic = TLS_CHAN_MAGIC;
-  TLS_CHAN_TO_BASE(new_t)->global_identifier = guid_counter++;
-  new_t->utp_write_buf = buf_new();
-  new_t->utp_read_buf = buf_new();
-  new_t->utp = s;
-  new_t->utp_is_dummy = 1;
-
-  UTP_SetCallbacks(s, &tor_UTPFunctionTable, (void *)new_t);
-
-  log_debug(LD_CHANNEL, "tor_UTPGotIncoming(" U64_FORMAT ")",
-            U64_PRINTF_ARG(TLS_CHAN_TO_BASE(new_t)->global_identifier));
-}
-
-/** Called by libevent when new bytes are available on the uTP socket
- * behind <b>fd</b>. */
-void
-utp_read_callback(evutil_socket_t fd, short what, void *arg)
-{
-  int len, salen;
-  byte buffer[8192];
-  struct sockaddr_storage sa;
-  (void) what;
-  (void) arg;
-  salen = sizeof(sa);
-
-  len = recvfrom(fd, (char*)buffer, sizeof(buffer), 0,
-                 (struct sockaddr*)&sa, (socklen_t *)&salen);
-  if (len > 0) {
-    bool isIncoming = UTP_IsIncomingUTP(tor_UTPGotIncomingConnection,
-                                        tor_UTPSendToProc, NULL, buffer,
-                                        (size_t)len,
-                                        (const struct sockaddr *)&sa, salen,
-                                        &log_utp);
-    log_debug(LD_CHANNEL, "Read uTP %d bytes: %s", len,
-              isIncoming ? "processed OK" : "failed processing");
-  } else {
-    log_debug(LD_CHANNEL, "Read 0 uTP bytes");
-  }
-}
-
 /**
  * Do parts of channel_tls_t initialization common to channel_tls_connect()
  * and channel_tls_handle_incoming().
@@ -528,6 +138,27 @@ channel_tls_common_init(channel_tls_t *tlschan)
   if (cell_ewma_enabled()) {
     circuitmux_set_policy(chan->cmux, &ewma_policy);
   }
+}
+
+// nb. This is for use by the client control stream only.
+// The context is different so it won't work with other streams.
+void write_control_stream_tlssecrets(quux_stream stream) {
+
+  channel_tls_t* tlschan = quux_get_context(stream);
+  do {
+    int bytes_wrote = quux_write(stream,
+        tlschan->tlssecrets + tlschan->cs_secret_pos,
+        sizeof(tlschan->tlssecrets) - tlschan->cs_secret_pos);
+
+    if (!bytes_wrote) {
+      return;
+    }
+    tlschan->cs_secret_pos += bytes_wrote;
+
+  } while (tlschan->cs_secret_pos < sizeof(tlschan->tlssecrets));
+
+  // Now the TLS secret is sent we can register it as CircID 0
+  channel_tls_get_or_create_streamcirc(tlschan, 0, tlschan->control_stream);
 }
 
 /**
@@ -583,21 +214,17 @@ channel_tls_connect(const tor_addr_t *addr, uint16_t port,
   tor_addr_to_sockaddr(addr, port, (struct sockaddr*)&sin, sizeof(sin));
   tor_addr_to_str(addr_str, addr, sizeof(addr_str), 0);
 
-  log_debug(LD_CHANNEL,
-           "Trying uTP connection to %s", addr_str);
-  tlschan->utp = UTP_Create(tor_UTPSendToProc, tlschan,
-                            (const struct sockaddr*)&sin, sizeof(sin));
-  tlschan->utp_write_buf = buf_new();
-  tlschan->utp_read_buf = buf_new();
-  tlschan->utp_sent_id = 0;
-  tlschan->utp_is_dummy = 0;
-  UTP_SetCallbacks(tlschan->utp, &tor_UTPFunctionTable, (void *)tlschan);
-  UTP_Connect(tlschan->utp);
+  log_debug(LD_CHANNEL, "Starting QUIC connection to %s", addr_str);
+  tlschan->streamcircmap = streamcircmap_new();
+  tlschan->peer = quux_open("example.com", (struct sockaddr*) &addr);
+  quux_set_accept_cb(tlschan->peer, quic_accept);
 
-  quux_conn peer = quux_peer((struct sockaddr*) &addr);
-  quux_stream stream = quux_connect(peer, quic_chan_writeable, quic_chan_readable);
-  quux_write_please(stream);
-  quux_set_context(stream, tlschan);
+  // The purpose of this stream is to set the crypto handshake in motion.
+  // When we send the AUTHENTICATE cell we'll also use it to send the TLS secret asap.
+  // After that point, the listener side will be able to connect back to us.
+  tlschan->control_stream = quux_connect(tlschan->peer);
+  quux_set_writeable_cb(write_control_stream_tlssecrets);
+  quux_set_context(tlschan->control_stream, tlschan);
 
   log_debug(LD_CHANNEL,
             "Got orconn %p for channel with global id " U64_FORMAT,
@@ -786,11 +413,7 @@ channel_tls_close_method(channel_t *chan)
 
   tor_assert(tlschan);
 
-  if (tlschan->utp) {
-    UTP_Close(tlschan->utp);
-    log_debug(LD_CHANNEL, "Closed uTP connection as part of closing TLS "
-             "channel.");
-  }
+  // TODO: close all the streams
 
   if (tlschan->conn) connection_or_close_normally(tlschan->conn, 1);
   else {
@@ -855,11 +478,7 @@ channel_tls_free_method(channel_t *chan)
 
   tor_assert(tlschan);
 
-  if (tlschan->utp) {
-    UTP_SetCallbacks(tlschan->utp, NULL, NULL);
-    log_debug(LD_CHANNEL, "Unset callbacks on uTP connection as part of "
-             "freeing TLS channel %p.", chan);
-  }
+  // TODO: free all the memory for streams and streamcircmap
 
   if (tlschan->conn) {
     tlschan->conn->chan = NULL;
@@ -1186,34 +805,194 @@ channel_tls_num_cells_writeable_method(channel_t *chan)
   return (int)n;
 }
 
-/** Extract and return SSL session key to be used as connection
- * identifier in the associated uTP connection. */
-void
-tor_tls_copy_master_key(tor_tls_t *tls, unsigned char *master_key)
-{
-  SSL_SESSION *session = SSL_get_session(tls->ssl);
-  memcpy(master_key, session->master_key, session->master_key_length);
-  if (session->master_key_length < SSL_MAX_MASTER_KEY_LENGTH) {
-    memset(master_key + session->master_key_length, 0, SSL_MAX_MASTER_KEY_LENGTH - session->master_key_length);
+/*
+ *
+ * The following write_*cell methods will only be called
+ * once the channel is in state OPEN, which also only happens after
+ * the AUTHENTICATE has placed tlssecrets on the chan
+ *
+ *
+ * For demo purposes, we have a very dumb circuit creation logic
+ * whereby if we see a circ_id for which no stream exists yet
+ * we create a new stream for it.
+ *
+ */
+
+/*
+ * count must be <= CELL_MAX_NETWORK_SIZE
+ *
+ * Return 1 if there was no buffer and we managed to write it all
+ * Return 0 if there was no buffer but we only achieved partial write
+ * Return -1 is there was already a buffer; the write is completely rejected
+ */
+int streamcirc_attempt_write(streamcirc_t* sctx, const uint8_t* src, size_t count) {
+
+  tor_assert(count <= CELL_MAX_NETWORK_SIZE);
+
+  if (sctx->write_cell_pos != 0) {
+    sctx->tlschan->needs_flush = 1;
+    return -1;
+  }
+
+  quux_stream stream = sctx->stream;
+
+  int pos = 0;
+  while (pos < count) {
+    int remaining = count - pos;
+    int bytes_wrote = quux_write(stream, src + pos, remaining);
+
+    if (!bytes_wrote) {
+      memcpy(sctx->write_cell_buf, src + pos, remaining);
+      sctx->write_cell_pos = remaining;
+      return 0;
+    }
+
+    pos += bytes_wrote;
+  }
+
+  return 1;
+}
+
+void streamcirc_continue_write(quux_stream stream) {
+  streamcirc_t* sctx = quux_get_stream_context(stream);
+
+  int pos = 0;
+  int count = sctx->write_cell_pos;
+  uint8_t* src = sctx->write_cell_buf;
+
+  do {
+    int remaining = count - pos;
+    int bytes_wrote = quux_write(stream, src + pos, remaining);
+
+    if (!bytes_wrote) {
+      memmove(sctx->write_cell_buf, src + pos, remaining);
+      sctx->write_cell_pos = remaining;
+      return;
+    }
+
+    pos += bytes_wrote;
+
+  } while (pos < count);
+
+  sctx->write_cell_pos = 0;
+
+  if (sctx->tlschan->needs_flush) {
+    sctx->tlschan->needs_flush = 0;
+    channel_flush_cells(TLS_CHAN_TO_BASE(sctx->tlschan));
   }
 }
 
-/** Send uTP connection ID as first SSL_MAX_MASTER_KEY_LENGTH bytes over
- * a uTP connection.  The connection ID is simply the SSL session key. */
-static void
-channel_tls_send_utp_id(channel_tls_t *tlschan)
+/*
+ * XXX: 'channel_tls_handle_var_cell' doesn't directly give feedback
+ * to tell us to stop and start reading cells off the network
+ * if the queues ahead are getting blocked.
+ *
+ * I think this might be done some other place by taking the TLS socket
+ * of the reading or active list, but that wouldn't help in our case
+ * because we're using a different socket.
+ *
+ * Perhaps need to look into that bit of code and get it to do more stuff.
+ */
+void streamcirc_continue_read(quux_stream stream) {
+
+  streamcirc_t* sctx = quux_get_context(stream);
+
+  channel_tls_t *tlschan = sctx->tlschan;
+  int wide_circ_ids = tlschan->conn->wide_circ_ids;
+  size_t cell_network_size = get_cell_network_size(wide_circ_ids);
+  uint8_t* read_buf = sctx->read_cell_buf;
+
+  do {
+    int bytes_read = quux_read(stream, read_buf + sctx->read_cell_pos, cell_network_size - sctx->read_cell_pos);
+
+    if (!bytes_read) {
+      return;
+    }
+    sctx->read_cell_pos += bytes_read;
+
+    if (sctx->read_cell_pos < cell_network_size) {
+      continue;
+    }
+
+    channel_timestamp_active(TLS_CHAN_TO_BASE(tlschan));
+    circuit_build_times_network_is_live(get_circuit_build_times_mutable());
+
+    cell_t cell;
+    cell_unpack(&cell, read_buf, wide_circ_ids);
+    sctx->read_cell_pos = 0;
+
+    log_debug(LD_CHANNEL, "Handling QUIC cell");
+    channel_tls_handle_cell(&cell, tlschan->conn);
+
+  } while (sctx->read_cell_pos < cell_network_size);
+}
+
+static streamcirc_t*
+channel_tls_get_or_create_streamcirc(channel_tls_t *tlschan, circid_t circ_id, quux_stream stream)
 {
-  if (tlschan->utp_sent_id)
-    return;
+  streamcirc_t* sctx = streamcircmap_get(tlschan->streamcircmap, circ_id);
 
-  tor_tls_t *tls = tlschan->conn->tls;
-  unsigned char master_key[SSL_MAX_MASTER_KEY_LENGTH];
-  tor_tls_copy_master_key(tls, master_key);
-  log_debug(LD_CHANNEL, "Sending uTP connection ID");
+  if (!sctx) {
 
-  write_to_buf((char *)master_key, SSL_MAX_MASTER_KEY_LENGTH,
-               tlschan->utp_write_buf);
-  tlschan->utp_sent_id = 1;
+    if (!tlschan->peer) {
+      // This means we're the listener side trying to write cells out,
+      // but it appears we haven't received any QUIC streams from our client yet.
+      // We can't connect back yet, so queue the cell until we can.
+      // FIXME: TODO: flush the cell again if the peer handle does turn up
+      return NULL;
+    }
+    if (circ_id == 0 && !stream) {
+      // no dynamic creation for the control stream, that gets associated manually
+      return NULL;
+    }
+
+    sctx = malloc(sizeof(streamcirc_t));
+    sctx->tlschan = tlschan;
+    sctx->stream = stream;
+    sctx->read_cell_pos = 0;
+    sctx->write_cell_pos = 0;
+
+    streamcircmap_set(tlschan->streamcircmap, circ_id, sctx);
+
+    if (stream) {
+      quux_set_stream_context(stream, sctx);
+
+    } else {
+      stream = quux_connect(tlschan->peer);
+      quux_set_readable_cb(stream, streamcirc_continue_read);
+      quux_set_writeable_cb(stream, streamcirc_continue_write);
+
+      quux_set_stream_context(stream, sctx);
+      sctx->stream = stream;
+
+      log_debug(LD_CHANNEL, "Sending QUIC connection ID");
+      // Write the secret along the stream to make sure the other end knows who we are.
+      // If the write is incomplete then we'll cause the cell to be buffered.
+      // We could be clever and only do this on the control_stream,
+      // but it needs extra coding to be safe from race with the circuit streams.
+      int secrets_write = streamcirc_attempt_write(sctx, tlschan->tlssecrets, TLSSECRETS_LEN);
+      if (secrets_write <= 0) {
+        return NULL;
+      }
+    }
+  }
+
+  return sctx;
+}
+
+static streamcirc_t*
+channel_tls_get_streamcirc(channel_tls_t *tlschan, circid_t circ_id)
+{
+  return channel_tls_get_or_create_streamcirc(tlschan, circ_id, NULL);
+}
+
+void
+streamcirc_associate_sctx(channel_tls_t *tlschan, circid_t circ_id, streamcirc_t* sctx)
+{
+  // Called by the listener side. If the map entry existed it would mean
+  // something had gone very wrong, with both sides trying to send an initial cell
+  // with same circid at the same time. Should be impossible due to separated CircID spaces
+  streamcircmap_set(tlschan->streamcircmap, circ_id, sctx);
 }
 
 /**
@@ -1235,7 +1014,13 @@ channel_tls_write_cell_method(channel_t *chan, cell_t *cell)
   if (tlschan->conn) {
     packed_cell_t networkcell;
     size_t cell_network_size = get_cell_network_size(chan->wide_circ_ids);
-    channel_tls_send_utp_id(tlschan);
+
+    streamcirc_t* sctx = channel_tls_get_streamcirc(tlschan, cell->circ_id);
+    if (!sctx) {
+      sctx->tlschan->needs_flush = 1;
+      return 0;
+    }
+
     cell_pack(&networkcell, cell, tlschan->conn->wide_circ_ids);
     write_to_buf(networkcell.body, cell_network_size, tlschan->utp_write_buf);
 
@@ -1274,6 +1059,14 @@ channel_tls_write_cell_method(channel_t *chan, cell_t *cell)
   return written;
 }
 
+static uint32_t normal_get_uint32(uint8_t* src) {
+  return (src[0] << 24) | (src[1] << 16) | (src[2] << 8) | src[3];
+}
+
+static uint16_t normal_get_uint16(uint8_t* src) {
+  return (src[0] << 8) | src[1];
+}
+
 /**
  * Write a packed cell to a channel_tls_t
  *
@@ -1294,9 +1087,29 @@ channel_tls_write_packed_cell_method(channel_t *chan,
 
   if (tlschan->conn) {
 #if 1
-    channel_tls_send_utp_id(tlschan);
+    int wide_circ_ids = tlschan->conn->wide_circ_ids;
+    int circ_id_len = get_circ_id_size(wide_circ_ids);
+
+    circid_t circ_id;
+    if (wide_circ_ids) {
+      circ_id = ntohl(normal_get_uint32(packed_cell->body));
+    } else {
+      circ_id = ntohs(normal_get_uint16(packed_cell->body));
+    }
+
+    streamcirc_t* sctx = channel_tls_get_streamcirc(tlschan, circ_id);
+    if (!sctx) {
+      sctx->tlschan->needs_flush = 1;
+      return 0;
+    }
+
     write_to_buf(packed_cell->body, cell_network_size, tlschan->utp_write_buf);
+
+
     UTP_Write(tlschan->utp, buf_datalen(tlschan->utp_write_buf));
+
+
+
     log_debug(LD_CHANNEL, "Asked to write packed cell uTP %lu bytes (%lu)",
         cell_network_size, buf_datalen(tlschan->utp_write_buf));
 #else
@@ -1337,12 +1150,21 @@ channel_tls_write_var_cell_method(channel_t *chan, var_cell_t *var_cell)
 #if 1
     int n;
     char hdr[VAR_CELL_MAX_HEADER_SIZE];
-    channel_tls_send_utp_id(tlschan);
+
+    streamcirc_t* sctx = channel_tls_get_streamcirc(tlschan, var_cell->circ_id);
+    if (!sctx) {
+      sctx->tlschan->needs_flush = 1;
+      return 0;
+    }
+
     n = var_cell_pack_header(var_cell, hdr, tlschan->conn->wide_circ_ids);
     write_to_buf(hdr, n, tlschan->utp_write_buf);
     write_to_buf((char*)var_cell->payload, var_cell->payload_len,
                  tlschan->utp_write_buf);
+
+
     UTP_Write(tlschan->utp, buf_datalen(tlschan->utp_write_buf));
+
     log_debug(LD_CHANNEL, "Asked to write var cell uTP %lu bytes (%lu)",
               (unsigned long)n + var_cell->payload_len,
               buf_datalen(tlschan->utp_write_buf));
@@ -1468,10 +1290,20 @@ channel_tls_handle_state_change_on_orconn(channel_tls_t *chan,
     channel_change_state(base_chan, CHANNEL_STATE_OPEN);
     log_debug(LD_CHANNEL, "Maybe handling uTP cells and varcells now,"
               "because we're done handshaking on tlschan %p.", chan);
-    // Is this handled by the next 2 lines now?
-#if 0
-    utp_process_cells_from_inbuf(chan);
-#endif
+
+    // Client reads will have been paused since creation at this point
+    // (when we go unmultiplex the streams won't even be created by now)
+
+    // For the listener's streams, they'
+    quux_read_please(chan->stream);
+
+    if (chan->want_read_after_handshake) {
+      quux_read_please(chan->stream);
+    }
+
+    // FIXME: do stuff
+    quux_write_please(stream);
+
     /* We might have just become writeable; check and tell the scheduler */
     if (connection_or_num_cells_writeable(conn) > 0) {
       scheduler_channel_wants_writes(base_chan);
@@ -2652,6 +2484,10 @@ channel_tls_process_authenticate_cell(var_cell_t *cell, channel_tls_t *chan)
     }
     tor_free(signed_data);
   }
+
+  // Allow QUIC listener callback code to find the channel based on this HMAC
+  extern tlssecretsmap_t *tlssecretsmap;
+  tlssecretsmap_set(tlssecretsmap, chan->tlssecrets, chan);
 
   /* Okay, we are authenticated. */
   chan->conn->handshake_state->received_authenticate = 1;
