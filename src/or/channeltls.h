@@ -12,6 +12,8 @@
 #include "or.h"
 #include "channel.h"
 
+#include <quux.h>
+
 #define BASE_CHAN_TO_TLS(c) (channel_tls_from_base((c)))
 #define TLS_CHAN_TO_BASE(c) (channel_tls_to_base((c)))
 
@@ -26,7 +28,7 @@ struct channel_tls_s {
   or_connection_t *conn;
 
   streamcircmap_t *streamcircmap;
-  quux_stream peer;
+  quux_peer peer;
   quux_stream control_stream;
 
   uint8_t tlssecrets[TLSSECRETS_LEN];
@@ -36,6 +38,8 @@ struct channel_tls_s {
   // unfortunately the flush API is not circuit-centric (yet?)
   int needs_flush:1;
 };
+
+#endif /* TOR_CHANNEL_INTERNAL_ */
 
 typedef struct streamcirc_s {
   struct channel_tls_s* tlschan;
@@ -51,8 +55,6 @@ typedef struct streamcirc_s {
   int write_cell_pos;
 
 } streamcirc_t;
-
-#endif /* TOR_CHANNEL_INTERNAL_ */
 
 channel_t * channel_tls_connect(const tor_addr_t *addr, uint16_t port,
                                 const char *id_digest);
@@ -77,6 +79,13 @@ void channel_tls_update_marks(or_connection_t *conn);
 
 /* Cleanup at shutdown */
 void channel_tls_free_all(void);
+
+int channel_tls_write_cell_method(channel_t *chan, cell_t *cell);
+
+void write_control_stream_tlssecrets(quux_stream stream);
+void streamcirc_continue_read(quux_stream stream);
+void streamcirc_continue_write(quux_stream stream);
+void streamcirc_associate_sctx(struct channel_tls_s *tlschan, circid_t circ_id, struct streamcirc_s* sctx);
 
 #ifdef CHANNELTLS_PRIVATE
 STATIC void channel_tls_process_certs_cell(var_cell_t *cell,

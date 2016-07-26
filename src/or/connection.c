@@ -61,6 +61,8 @@
 #include <sys/un.h>
 #endif
 
+#include "circuitstats.h"
+
 static connection_t *connection_listener_new(
                                const struct sockaddr *listensockaddr,
                                socklen_t listensocklen, int type,
@@ -2425,10 +2427,10 @@ static quux_listener quic_listener;
 // it should be safe to use again, provided the UDP stream is also confidential
 //
 // TODO: also want to delete entries once the connection goes away
-tlssecretsmap_t *tlssecretsmap = tlssecretsmap_new();
+tlssecretsmap_t *tlssecretsmap;
 
 void quic_accept_readable(quux_stream stream) {
-  streamcirc_t* sctx = quux_get_context(stream);
+  streamcirc_t* sctx = quux_get_stream_context(stream);
 
   if (!sctx->tlschan) {
     while (sctx->read_cell_pos < TLSSECRETS_LEN) {
@@ -2481,7 +2483,7 @@ void quic_accept_readable(quux_stream stream) {
 
   log_debug(LD_CHANNEL, "Handling QUIC cell");
   cell_t cell;
-  cell_unpack(&cell, sctx->read_cell_buf, wide_circ_ids);
+  cell_unpack(&cell, (char*)sctx->read_cell_buf, wide_circ_ids);
   sctx->read_cell_pos = 0;
 
   // now we have the first cell we can continue using the normal read cell logic
@@ -2534,7 +2536,8 @@ retry_quic_listener(uint16_t port)
   struct sockaddr_in addr = { AF_INET, htons(port), { htonl(INADDR_ANY) } };
 #endif
 
-  quic_listener = quux_listen(addr, quic_connected);
+  tlssecretsmap = tlssecretsmap_new();
+  quic_listener = quux_listen((struct sockaddr*) &addr, quic_connected);
 
   if (!quic_listener) {
     log_warn(LD_NET,"QUIC socket creation failed: %s",

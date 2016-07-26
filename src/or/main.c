@@ -87,6 +87,8 @@
 #include <systemd/sd-daemon.h>
 #endif
 
+#include "../../../libquic/src/quux/quux.h"
+
 void evdns_shutdown(int);
 
 /********* PROTOTYPES **********/
@@ -1201,7 +1203,7 @@ run_connection_housekeeping(int i, time_t now)
     // but the method below seems a more direct equivalent
     channel_write_cell(TLS_CHAN_TO_BASE(or_conn->chan), &cell);
 #else
-    channel_tls_write_cell_method(or_conn->chan, &cell);
+    channel_tls_write_cell_method(TLS_CHAN_TO_BASE(or_conn->chan), &cell);
 #endif
 #endif
   }

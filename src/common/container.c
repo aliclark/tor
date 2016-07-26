@@ -1053,7 +1053,7 @@ DEFINE_MAP_STRUCTS(strmap_t, char *key, strmap_);
 DEFINE_MAP_STRUCTS(digestmap_t, char key[DIGEST_LEN], digestmap_);
 DEFINE_MAP_STRUCTS(digest256map_t, uint8_t key[DIGEST256_LEN], digest256map_);
 DEFINE_MAP_STRUCTS(tlssecretsmap_t, uint8_t key[TLSSECRETS_LEN], tlssecretsmap_);
-DEFINE_MAP_STRUCTS(streamcircmap_t, circid_t key, streamcircmap_);
+DEFINE_MAP_STRUCTS(streamcircmap_t, uint32_t key, streamcircmap_);
 
 /** Helper: compare strmap_entry_t objects by key value. */
 static INLINE int
@@ -1203,7 +1203,7 @@ tlssecretsmap_assign_tmp_key(tlssecretsmap_entry_t *ent, const uint8_t *key)
   memcpy(ent->key, key, TLSSECRETS_LEN);
 }
 static INLINE void
-streamcircmap_assign_tmp_key(streamcircmap_entry_t *ent, circid_t key)
+streamcircmap_assign_tmp_key(streamcircmap_entry_t *ent, uint32_t key)
 {
   ent->key = key;
 }
@@ -1229,7 +1229,7 @@ tlssecretsmap_assign_key(tlssecretsmap_entry_t *ent, const uint8_t *key)
   memcpy(ent->key, key, TLSSECRETS_LEN);
 }
 static INLINE void
-streamcircmap_assign_key(streamcircmap_entry_t *ent, circid_t key)
+streamcircmap_assign_key(streamcircmap_entry_t *ent, uint32_t key)
 {
   ent->key = key;
 }
@@ -1256,7 +1256,7 @@ streamcircmap_assign_key(streamcircmap_entry_t *ent, circid_t key)
   /** Return the item from <b>map</b> whose key matches <b>key</b>, or  \
    * NULL if no such value exists. */                                   \
   void *                                                                \
-  prefix##_get(const maptype *map, const keytype key)                   \
+  prefix##_get(const maptype *map, keytype key)                         \
   {                                                                     \
     prefix ##_entry_t *resolve;                                         \
     prefix ##_entry_t search;                                           \
@@ -1274,7 +1274,7 @@ streamcircmap_assign_key(streamcircmap_entry_t *ent, circid_t key)
   /** Add an entry to <b>map</b> mapping <b>key</b> to <b>val</b>;      \
    * return the previous value, or NULL if no such value existed. */     \
   void *                                                                \
-  prefix##_set(maptype *map, const keytype key, void *val)              \
+  prefix##_set(maptype *map, keytype key, void *val)                    \
   {                                                                     \
     prefix##_entry_t search;                                            \
     void *oldval;                                                       \
@@ -1315,7 +1315,7 @@ streamcircmap_assign_key(streamcircmap_entry_t *ent, circid_t key)
    * Note: you must free any storage associated with the returned value. \
    */                                                                   \
   void *                                                                \
-  prefix##_remove(maptype *map, const keytype key)                      \
+  prefix##_remove(maptype *map, keytype key)                            \
   {                                                                     \
     prefix##_entry_t *resolve;                                          \
     prefix##_entry_t search;                                            \
@@ -1430,7 +1430,7 @@ streamcircmap_assign_key(streamcircmap_entry_t *ent, circid_t key)
   /** Set *<b>keyp</b> and *<b>valp</b> to the current entry pointed    \
    * to by iter. */                                                     \
   void                                                                  \
-  prefix##_iter_get(prefix##_iter_t *iter, const keytype *keyp,         \
+  prefix##_iter_get(prefix##_iter_t *iter, keytype *keyp,               \
                     void **valp)                                        \
   {                                                                     \
     tor_assert(iter);                                                   \
@@ -1448,11 +1448,11 @@ streamcircmap_assign_key(streamcircmap_entry_t *ent, circid_t key)
     return iter == NULL;                                                \
   }
 
-IMPLEMENT_MAP_FNS(strmap_t, char *, strmap)
-IMPLEMENT_MAP_FNS(digestmap_t, char *, digestmap)
-IMPLEMENT_MAP_FNS(digest256map_t, uint8_t *, digest256map)
-IMPLEMENT_MAP_FNS(tlssecretsmap_t, uint8_t *, tlssecretsmap)
-IMPLEMENT_MAP_FNS(streamcircmap_t, circid_t, streamcircmap)
+IMPLEMENT_MAP_FNS(strmap_t, const char *, strmap)
+IMPLEMENT_MAP_FNS(digestmap_t, const char *, digestmap)
+IMPLEMENT_MAP_FNS(digest256map_t, const uint8_t *, digest256map)
+IMPLEMENT_MAP_FNS(tlssecretsmap_t, const uint8_t *, tlssecretsmap)
+IMPLEMENT_MAP_FNS(streamcircmap_t, uint32_t, streamcircmap)
 
 /** Same as strmap_set, but first converts <b>key</b> to lowercase. */
 void *
