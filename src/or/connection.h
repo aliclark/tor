@@ -37,6 +37,8 @@ void connection_mark_for_close_(connection_t *conn,
 void connection_mark_for_close_internal_(connection_t *conn,
                                          int line, const char *file);
 
+extern tlssecretsmap_t *tlssecretsmap;
+
 #define connection_mark_for_close(c) \
   connection_mark_for_close_((c), __LINE__, SHORT_FILE__)
 #define connection_mark_for_close_internal(c) \

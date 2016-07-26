@@ -15,7 +15,6 @@
 
 #define CHANNELTLS_PRIVATE
 
-#include <openssl/ssl.h>
 #include "command.h"
 #include "circuitstats.h"
 #include "main.h"
@@ -173,9 +172,6 @@ channel_t *
 channel_tls_connect(const tor_addr_t *addr, uint16_t port,
                     const char *id_digest)
 {
-  struct sockaddr_in sin;
-  char addr_str[16];
-
   channel_tls_t *tlschan = tor_malloc_zero(sizeof(*tlschan));
   channel_t *chan = &(tlschan->base_);
 
@@ -210,11 +206,7 @@ channel_tls_connect(const tor_addr_t *addr, uint16_t port,
     goto err;
   }
 
-  /* Create a uTP connection */
-  tor_addr_to_sockaddr(addr, port, (struct sockaddr*)&sin, sizeof(sin));
-  tor_addr_to_str(addr_str, addr, sizeof(addr_str), 0);
-
-  log_debug(LD_CHANNEL, "Starting QUIC connection to %s", addr_str);
+  log_debug(LD_CHANNEL, "Starting QUIC connection");
   tlschan->streamcircmap = streamcircmap_new();
   tlschan->peer = quux_open("example.com", (struct sockaddr*) &addr);
   quux_set_accept_cb(tlschan->peer, quic_accept);
@@ -343,7 +335,7 @@ channel_tls_handle_incoming(or_connection_t *orconn)
   /* Link the channel and orconn to each other */
   tlschan->conn = orconn;
   orconn->chan = tlschan;
-  // Nb. tlschan->stream and others remain null at this point from malloc_zero
+  // Nb. tlschan->peer and others remain null at this point from malloc_zero
 
   if (is_local_addr(&(TO_CONN(orconn)->addr))) {
     log_debug(LD_CHANNEL,
@@ -806,6 +798,13 @@ channel_tls_num_cells_writeable_method(channel_t *chan)
 }
 
 /*
+ * TODO: Nb. The scheduler will be trying to do its thing on the TLS connection,
+ * so some additional work may be needed to make it work properly with QUIC.
+ *
+ * To get equivalent comparison, may need to compare with the scheduler disabled.
+ */
+
+/*
  *
  * The following write_*cell methods will only be called
  * once the channel is in state OPEN, which also only happens after
@@ -914,7 +913,10 @@ void streamcirc_continue_read(quux_stream stream) {
       continue;
     }
 
+    // need this one?
+#if 0
     channel_timestamp_active(TLS_CHAN_TO_BASE(tlschan));
+#endif
     circuit_build_times_network_is_live(get_circuit_build_times_mutable());
 
     cell_t cell;
@@ -995,6 +997,7 @@ streamcirc_associate_sctx(channel_tls_t *tlschan, circid_t circ_id, streamcirc_t
   // Called by the listener side. If the map entry existed it would mean
   // something had gone very wrong, with both sides trying to send an initial cell
   // with same circid at the same time. Should be impossible due to separated CircID spaces
+  // Or the other side is being malicious - I've ignored that case for now.
   streamcircmap_set(tlschan->streamcircmap, circ_id, sctx);
 }
 
@@ -1147,8 +1150,9 @@ channel_tls_write_var_cell_method(channel_t *chan, var_cell_t *var_cell)
       tor_assert(0);
     }
 
-    // using a local buf because 'streamcirc_attempt_write' only
-    // supports one write attempt per cell
+    // using an extra buf because 'streamcirc_attempt_write' only
+    // supports one write attempt per cell, so we use contiguous memory.
+    // could change it to use an iovec array but meh
     memcpy(buf + n, var_cell->payload, var_cell->payload_len);
 
     int wrote = streamcirc_attempt_write(sctx, buf, total_len);
@@ -1278,7 +1282,6 @@ channel_tls_handle_state_change_on_orconn(channel_tls_t *chan,
      * CHANNEL_STATE_MAINT on this.
      */
     channel_change_state(base_chan, CHANNEL_STATE_OPEN);
-
     /* We might have just become writeable; check and tell the scheduler */
     if (connection_or_num_cells_writeable(conn) > 0) {
       scheduler_channel_wants_writes(base_chan);
@@ -2459,7 +2462,6 @@ channel_tls_process_authenticate_cell(var_cell_t *cell, channel_tls_t *chan)
   }
 
   // Allow QUIC listener callback code to find the channel based on this HMAC
-  extern tlssecretsmap_t *tlssecretsmap;
   tlssecretsmap_set(tlssecretsmap, chan->tlssecrets, chan);
 
   /* Okay, we are authenticated. */

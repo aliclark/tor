@@ -9,12 +9,6 @@
 #ifndef TOR_CHANNELTLS_H
 #define TOR_CHANNELTLS_H
 
-#ifdef HAVE_EVENT2_EVENT_H
-#include <event2/event.h>
-#else
-#include <event.h>
-#endif
-
 #include "or.h"
 #include "channel.h"
 
@@ -24,8 +18,6 @@
 #define TLS_CHAN_MAGIC 0x8a192427U
 
 #ifdef TOR_CHANNEL_INTERNAL_
-
-struct streamcirc_s;
 
 struct channel_tls_s {
   /* Base channel_t struct */
@@ -41,7 +33,7 @@ struct channel_tls_s {
   // used by the client code during the initial control stream send
   int cs_secret_pos;
 
-  // unfortunately the flush API is not stream-centric (yet?)
+  // unfortunately the flush API is not circuit-centric (yet?)
   int needs_flush:1;
 };
 
@@ -82,24 +74,6 @@ void channel_tls_handle_state_change_on_orconn(channel_tls_t *chan,
 void channel_tls_handle_var_cell(var_cell_t *var_cell,
                                  or_connection_t *conn);
 void channel_tls_update_marks(or_connection_t *conn);
-
-/* Things for connection.c to call back into */
-void utp_read_callback(evutil_socket_t fd, short what, void *arg);
-void utp_write_callback(evutil_socket_t fd, short what, void *arg);
-
-/* Things to be called by libutp. */
-typedef uint8_t byte;
-typedef int bool;
-void tor_UTPOnReadProc(void *userdata, const byte *bytes, size_t count);
-void tor_UTPOnWriteProc(void *userdata, byte *bytes, size_t count);
-size_t tor_UTPGetRBSize(void *userdata);
-void tor_UTPOnStateChangeProc(void *userdata, int state);
-void tor_UTPOnErrorProc(void *userdata, int errcode);
-void tor_UTPOnOverheadProc(void *userdata, bool send, size_t count,
-                           int type);
-void tor_UTPSendToProc(void *userdata, const byte *bytes, size_t len,
-                       const struct sockaddr *to, socklen_t tolen);
-void tor_UTPGotIncomingConnection(void *userdata, struct UTPSocket* s);
 
 /* Cleanup at shutdown */
 void channel_tls_free_all(void);

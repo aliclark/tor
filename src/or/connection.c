@@ -2427,141 +2427,6 @@ static quux_listener quic_listener;
 // TODO: also want to delete entries once the connection goes away
 tlssecretsmap_t *tlssecretsmap = tlssecretsmap_new();
 
-
-#if 0
-
-// using simpler code below instead for now
-void quic_readable_tlschan_defunct(quux_stream stream, channel_tls_t *tlschan) {
-
-  // A lot of this gunk is down to wanting to avoid
-  // the overhead of write_to_buf in normal operation.
-  // That might be misguided, could do with some benchmark comparison.
-  //
-  // I think all variable cells happen before state OPEN.
-  // Can we just leave out that functionality?
-
-  int wide_circ_ids = tlschan->conn->wide_circ_ids;
-  int circ_id_len = get_circ_id_size(wide_circ_ids);
-  unsigned var_header_len = get_var_cell_header_size(wide_circ_ids);
-  size_t cell_network_size = get_cell_network_size(wide_circ_ids);
-  int linkproto = 4;
-
-  for (;;) {
-    if (tlschan->in_var_cell) {
-      char var_header[VAR_CELL_MAX_HEADER_SIZE];
-      peek_from_buf(var_header, var_header_len, tlschan->var_cell_buf);
-
-      uint16_t payload_len = ntohs(get_uint16(var_header + circ_id_len + 1));
-
-      size_t to_read = payload_len - tlschan->var_cell_buf->datalen;
-      if (to_read) {
-        if (to_read > sizeof(tlschan->cell_buf)) {
-          to_read = sizeof(tlschan->cell_buf);
-        }
-        int bytes_read = quux_read(stream, tlschan->cell_buf, to_read);
-        if (!bytes_read) {
-          return;
-        }
-        write_to_buf(tlschan->cell_buf, bytes_read, tlschan->var_cell_buf);
-
-        if (tlschan->var_cell_buf->datalen < (size_t)(var_header_len + payload_len)) {
-          continue;
-        }
-      }
-
-      var_cell_t *var_cell = var_cell_new(payload_len);
-      var_cell->command = get_uint8(var_header + circ_id_len);
-      if (wide_circ_ids) {
-        var_cell->circ_id = ntohl(get_uint32(var_header));
-      } else {
-        var_cell->circ_id = ntohs(get_uint16(var_header));
-      }
-      buf_remove_from_front(tlschan->var_cell_buf, var_header_len);
-
-      fetch_from_buf((char*)var_cell->payload, payload_len, tlschan->var_cell_buf);
-
-      /* Touch the channel's active timestamp if there is one */
-      channel_timestamp_active(TLS_CHAN_TO_BASE(tlschan));
-
-      log_debug(LD_CHANNEL, "Handling uTP varcell");
-      circuit_build_times_network_is_live(get_circuit_build_times_mutable());
-      channel_tls_handle_var_cell(var_cell, tlschan->conn);
-      var_cell_free(var_cell);
-
-      // The original copy may have pushed up to cell_network_size extra data onto var_cell_buf
-      // (which is useful anyhow as a non transient place to store it while processing the var cell).
-      // Now that we've done a var cell, put that data back into play.
-      tlschan->cell_pos = tlschan->var_cell_buf->datalen;
-      fetch_from_buf(tlschan->cell_buf, tlschan->var_cell_buf->datalen, tlschan->var_cell_buf);
-
-      tlschan->in_var_cell = 0;
-    }
-
-    // normal cell processing, slightly faster case
-
-    size_t to_read = cell_network_size - tlschan->cell_pos;
-    if (to_read) {
-      int bytes_read = quux_read(stream, tlschan->cell_buf + tlschan->cell_pos, to_read);
-      if (!bytes_read) {
-        return;
-      }
-      tlschan->cell_pos += bytes_read;
-
-      if (tlschan->cell_pos < var_header_len) {
-        // need to at least get var cell header before proceeding
-        continue;
-      }
-
-      uint8_t command = get_uint8(tlschan->cell_buf + circ_id_len);
-      if (cell_command_is_var_length(command, linkproto)) {
-        write_to_buf(tlschan->cell_buf, tlschan->cell_pos, tlschan->var_cell_buf);
-        tlschan->in_var_cell = 1;
-        continue;
-      }
-
-      if (tlschan->cell_pos < cell_network_size) {
-        // need to at least get full cell before proceeding
-        continue;
-      }
-    }
-
-    channel_timestamp_active(TLS_CHAN_TO_BASE(tlschan));
-    circuit_build_times_network_is_live(get_circuit_build_times_mutable());
-
-    log_debug(LD_CHANNEL, "Handling QUIC cell");
-    cell_t cell;
-    cell_unpack(&cell, tlschan->cell_buf, wide_circ_ids);
-    tlschan->cell_pos = 0;
-    channel_tls_handle_cell(&cell, tlschan->conn);
-  }
-
-  // keeping this old code around for a while too
-    smartlist_t *conns = get_connection_array();
-    // Maintaining a hash map would probably be a better choice performance-wise
-    // maybe not so smart for security
-    SMARTLIST_FOREACH(conns, connection_t*, conn, {
-      if (conn->type != CONN_TYPE_OR) {
-        continue;
-      }
-
-      SSL_SESSION *session = SSL_get_session(((or_connection_t*)conn)->tls->ssl);
-
-      if (!memcmp(session->master_key, arg.tlssecrets, 32)) {
-        tlschan = ((or_connection_t*)conn)->chan;
-        break;
-      }
-    });
-
-}
-#endif
-
-
-
-void quic_accept_readable_sctx(quux_stream stream, streamcirc_t* sctx) {
-
-
-}
-
 void quic_accept_readable(quux_stream stream) {
   streamcirc_t* sctx = quux_get_context(stream);
 
@@ -2595,14 +2460,6 @@ void quic_accept_readable(quux_stream stream) {
     }
 
     sctx->tlschan = tlschan;
-
-    // because we may have already got the write callback while
-    // still reading the TLS key
-#if 0
-    if (arg->want_write) {
-      quic_writeable_tlschan(stream, tlschan);
-    }
-#endif
 
     // continue reading the first cell, which will identify the circuit
   }
@@ -2640,39 +2497,6 @@ void quic_accept_readable(quux_stream stream) {
   streamcirc_continue_read(stream);
 }
 
-#if 0
-// Writeables will mainly happen if we've attempted a cell write and got 0.
-// At that point we would have cached the remnants of the cell.
-//
-// Additionally if a further cell write was attempted that
-// would have resulted in us giving feedback to start blocking,
-// which means we have a responsibility to call flush.
-
-void quic_writeable_tlschan(quux_stream stream, channel_tls_t* tlschan) {
-
-}
-
-void quic_listener_writeable(quux_stream stream) {
-  struct quic_listen_s* arg = quux_get_context(stream);
-
-  if (!arg->tlschan) {
-#if 0
-    arg->want_write = 1;
-    return;
-#else
-    log_debug(LD_CHANNEL, "Early write to listener stream before TLS sync");
-#endif
-  }
-
-  quic_writeable_tlschan(stream, arg->tlschan);
-}
-
-void quic_chan_writeable(quux_stream stream) {
-  channel_tls_t* tlschan = quux_get_context(stream);
-  quic_writeable_tlschan(stream, tlschan);
-}
-#endif
-
 /**
  * Used by both the connect and listen side as the starting point for accepting inbound streams.
  */
@@ -2690,23 +2514,12 @@ void quic_accept(quux_stream stream) {
 
   // Start reading off the TLS secret
   quic_accept_readable(stream);
-
 }
 
 void quic_connected(quux_peer peer) {
   quux_set_accept_cb(peer, quic_accept);
 }
 
-/*
- * FIXME: Nb. The scheduler will be trying to do its thing on the TLS connection,
- * so some additional work is needed to make it work here.
- *
- * To get equivalent comparison, may need to compare with the scheduler disabled.
- */
-
-/** Open a UDP server socket on <b>port</b> and add a callback to libutp
- * to handle incoming uTP bytesfor us, which can be either new incoming
- * connections or incoming uTP packets on existing connections. */
 static int
 retry_quic_listener(uint16_t port)
 {
@@ -2768,7 +2581,6 @@ retry_all_listeners(smartlist_t *replaced_conns,
                            close_all_noncontrol) < 0)
     retval = -1;
 
-  /* Start the QUIC listener */
   retry_quic_listener(router_get_advertised_or_port(options));
 
   /* Any members that were still in 'listeners' don't correspond to
