@@ -132,6 +132,7 @@ int streamcirc_attempt_write(streamcirc_t* sctx, const uint8_t* src, size_t coun
   tor_assert(count <= CELL_MAX_NETWORK_SIZE);
 
   if (sctx->write_cell_pos != 0) {
+    log_debug(LD_CHANNEL, "QUIC won't write because data is already pending");
     sctx->tlschan->needs_flush = 1;
     return -1;
   }
@@ -144,19 +145,25 @@ int streamcirc_attempt_write(streamcirc_t* sctx, const uint8_t* src, size_t coun
     int bytes_wrote = quux_write(stream, src + pos, remaining);
 
     if (!bytes_wrote) {
+      log_debug(LD_CHANNEL, "QUIC paused during attempted write");
       memcpy(sctx->write_cell_buf, src + pos, remaining);
       sctx->write_cell_pos = remaining;
       return 0;
     }
 
     pos += bytes_wrote;
+    log_debug(LD_CHANNEL, "QUIC wrote part of the attempted write");
   }
+
+  log_debug(LD_CHANNEL, "QUIC attempted write successful");
 
   return 1;
 }
 
 void streamcirc_continue_write(quux_stream stream) {
   streamcirc_t* sctx = quux_get_stream_context(stream);
+
+  log_debug(LD_CHANNEL, "QUIC continuing write");
 
   int pos = 0;
   int count = sctx->write_cell_pos;
@@ -167,18 +174,23 @@ void streamcirc_continue_write(quux_stream stream) {
     int bytes_wrote = quux_write(stream, src + pos, remaining);
 
     if (!bytes_wrote) {
+      log_debug(LD_CHANNEL, "QUIC paused write");
       memmove(sctx->write_cell_buf, src + pos, remaining);
       sctx->write_cell_pos = remaining;
       return;
     }
 
     pos += bytes_wrote;
+    log_debug(LD_CHANNEL, "QUIC partial write");
 
   } while (pos < count);
 
   sctx->write_cell_pos = 0;
 
+  log_debug(LD_CHANNEL, "QUIC finished write");
+
   if (sctx->tlschan->needs_flush) {
+    log_debug(LD_CHANNEL, "QUIC flushing its pending cells");
     sctx->tlschan->needs_flush = 0;
     channel_flush_cells(TLS_CHAN_TO_BASE(sctx->tlschan));
   }
@@ -197,6 +209,8 @@ void streamcirc_continue_write(quux_stream stream) {
  */
 void streamcirc_continue_read(quux_stream stream) {
 
+  log_debug(LD_CHANNEL, "QUIC continuing cell reads");
+
   streamcirc_t* sctx = quux_get_stream_context(stream);
 
   channel_tls_t *tlschan = sctx->tlschan;
@@ -208,13 +222,17 @@ void streamcirc_continue_read(quux_stream stream) {
     int bytes_read = quux_read(stream, read_buf + sctx->read_cell_pos, cell_network_size - sctx->read_cell_pos);
 
     if (!bytes_read) {
+      log_debug(LD_CHANNEL, "QUIC paused during cell reads");
       return;
     }
     sctx->read_cell_pos += bytes_read;
 
     if (sctx->read_cell_pos < cell_network_size) {
+      log_debug(LD_CHANNEL, "QUIC read a partial cell");
       continue;
     }
+
+    log_debug(LD_CHANNEL, "QUIC read a full cell");
 
     // need this one?
 #if 0
@@ -236,6 +254,8 @@ channel_tls_get_or_create_streamcirc(channel_tls_t *tlschan, circid_t circ_id, q
 {
   streamcirc_t* sctx = streamcircmap_get(tlschan->streamcircmap, circ_id);
 
+  log_debug(LD_CHANNEL, "QUIC asked for streamcirc for %d, existing was %p", circ_id, sctx);
+
   if (!sctx) {
 
     if (!tlschan->peer) {
@@ -243,12 +263,16 @@ channel_tls_get_or_create_streamcirc(channel_tls_t *tlschan, circid_t circ_id, q
       // but it appears we haven't received any QUIC streams from our client yet.
       // We can't connect back yet, so queue the cell until we can.
       // FIXME: TODO: flush the cell again if the peer handle does turn up
+      log_debug(LD_CHANNEL, "QUIC no peer arrived yet, will queue");
       return NULL;
     }
     if (circ_id == 0 && !stream) {
       // no dynamic creation for the control stream, that gets associated manually
+      log_debug(LD_CHANNEL, "QUIC attempted dynamic create of control stream!");
       return NULL;
     }
+
+    log_debug(LD_CHANNEL, "QUIC will create a streamcirc for %d, stream %p", circ_id, stream);
 
     sctx = malloc(sizeof(streamcirc_t));
     sctx->tlschan = tlschan;
@@ -262,7 +286,9 @@ channel_tls_get_or_create_streamcirc(channel_tls_t *tlschan, circid_t circ_id, q
       quux_set_stream_context(stream, sctx);
 
     } else {
+      log_debug(LD_CHANNEL, "QUIC connecting to peer for cell write");
       stream = quux_connect(tlschan->peer);
+      log_debug(LD_CHANNEL, "QUIC got stream for cell write: %p", stream);
       quux_set_readable_cb(stream, streamcirc_continue_read);
       quux_set_writeable_cb(stream, streamcirc_continue_write);
 
@@ -272,13 +298,14 @@ channel_tls_get_or_create_streamcirc(channel_tls_t *tlschan, circid_t circ_id, q
       // kick the reader into action; should read nothing for the time being
       streamcirc_continue_read(stream);
 
-      log_debug(LD_CHANNEL, "Sending QUIC connection ID");
+      log_debug(LD_CHANNEL, "QUIC sendingconnection ID");
       // Write the secret along the stream to make sure the other end knows who we are.
       // If the write is incomplete then we'll cause the cell to be buffered.
       // We could be clever and only do this on the control_stream,
       // but it needs extra coding to be safe from race with the circuit streams.
       int secrets_write = streamcirc_attempt_write(sctx, tlschan->tlssecrets, TLSSECRETS_LEN);
       if (secrets_write <= 0) {
+        log_debug(LD_CHANNEL, "QUIC did partial write of the TLS secret");
         return NULL;
       }
     }
@@ -290,11 +317,14 @@ channel_tls_get_or_create_streamcirc(channel_tls_t *tlschan, circid_t circ_id, q
 static streamcirc_t*
 channel_tls_get_streamcirc(channel_tls_t *tlschan, circid_t circ_id)
 {
+  log_debug(LD_CHANNEL, "QUIC get streamcirc %d", circ_id);
   return channel_tls_get_or_create_streamcirc(tlschan, circ_id, NULL);
 }
 
 void streamcirc_associate_sctx(channel_tls_t *tlschan, circid_t circ_id, streamcirc_t* sctx)
 {
+  log_debug(LD_CHANNEL, "QUIC associate streamcirc %d to %p", circ_id, sctx);
+
   // Called by the listener side. If the map entry existed it would mean
   // something had gone very wrong, with both sides trying to send an initial cell
   // with same circid at the same time. Should be impossible due to separated CircID spaces
@@ -306,6 +336,8 @@ void streamcirc_associate_sctx(channel_tls_t *tlschan, circid_t circ_id, streamc
 // The context is different so it won't work with other streams.
 void write_control_stream_tlssecrets(quux_stream stream) {
 
+  log_debug(LD_CHANNEL, "QUIC continue write TLS secret");
+
   channel_tls_t* tlschan = quux_get_stream_context(stream);
   do {
     int bytes_wrote = quux_write(stream,
@@ -313,11 +345,16 @@ void write_control_stream_tlssecrets(quux_stream stream) {
         sizeof(tlschan->tlssecrets) - tlschan->cs_secret_pos);
 
     if (!bytes_wrote) {
+      log_debug(LD_CHANNEL, "QUIC paused while writing TLS secret");
       return;
     }
     tlschan->cs_secret_pos += bytes_wrote;
 
+    log_debug(LD_CHANNEL, "QUIC manage partial write of TLS secret");
+
   } while (tlschan->cs_secret_pos < sizeof(tlschan->tlssecrets));
+
+  log_debug(LD_CHANNEL, "QUIC completed the write of TLS secret");
 
   // Now the TLS secret is sent we can register it as CircID 0
   channel_tls_get_or_create_streamcirc(tlschan, 0, tlschan->control_stream);
@@ -410,19 +447,20 @@ channel_tls_connect(const tor_addr_t *addr, uint16_t port,
     goto err;
   }
 
-  log_debug(LD_CHANNEL, "Starting QUIC connection");
+  log_debug(LD_CHANNEL, "QUIC connecting to peer");
   struct sockaddr_in6 sin;
   tor_addr_to_sockaddr(addr, port, (struct sockaddr*)&sin, sizeof(sin));
 
   tlschan->streamcircmap = streamcircmap_new();
   tlschan->peer = quux_open("example.com", (struct sockaddr*) &sin);
-  log_debug(LD_CHANNEL, "Got QUIC connection %p", tlschan->peer);
+  log_debug(LD_CHANNEL, "QUIC opened peer %p", tlschan->peer);
   quux_set_accept_cb(tlschan->peer, quic_accept);
 
   // The purpose of this stream is to set the crypto handshake in motion.
   // When we send the AUTHENTICATE cell we'll also use it to send the TLS secret asap.
   // After that point, the listener side will be able to connect back to us.
   tlschan->control_stream = quux_connect(tlschan->peer);
+  log_debug(LD_CHANNEL, "QUIC made control stream %p", tlschan->control_stream);
   quux_set_writeable_cb(tlschan->control_stream, write_control_stream_tlssecrets);
   quux_set_stream_context(tlschan->control_stream, tlschan);
 
@@ -1027,7 +1065,7 @@ channel_tls_write_cell_method(channel_t *chan, cell_t *cell)
 
     streamcirc_t* sctx = channel_tls_get_streamcirc(tlschan, cell->circ_id);
     if (!sctx) {
-      sctx->tlschan->needs_flush = 1;
+      tlschan->needs_flush = 1;
       return 0;
     }
 
@@ -1094,9 +1132,12 @@ channel_tls_write_packed_cell_method(channel_t *chan,
 
     streamcirc_t* sctx = channel_tls_get_streamcirc(tlschan, circ_id);
     if (!sctx) {
-      sctx->tlschan->needs_flush = 1;
+      log_debug(LD_CHANNEL, "There was no sctx");
+      tlschan->needs_flush = 1;
       return 0;
     }
+
+    log_debug(LD_CHANNEL, "About to write %zu", cell_network_size);
 
     int wrote = streamcirc_attempt_write(sctx, (uint8_t*)packed_cell->body, cell_network_size);
 
@@ -1138,7 +1179,7 @@ channel_tls_write_var_cell_method(channel_t *chan, var_cell_t *var_cell)
   if (tlschan->conn) {
     streamcirc_t* sctx = channel_tls_get_streamcirc(tlschan, var_cell->circ_id);
     if (!sctx) {
-      sctx->tlschan->needs_flush = 1;
+      tlschan->needs_flush = 1;
       return 0;
     }
 

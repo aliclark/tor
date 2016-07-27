@@ -2436,6 +2436,7 @@ void quic_accept_readable(quux_stream stream) {
     while (sctx->read_cell_pos < TLSSECRETS_LEN) {
       int bytes_read = quux_read(stream, sctx->read_cell_buf + sctx->read_cell_pos, TLSSECRETS_LEN - sctx->read_cell_pos);
       if (!bytes_read) {
+        log_debug(LD_CHANNEL, "QUIC paused during TLS secret read");
         return;
       }
       sctx->read_cell_pos += bytes_read;
@@ -2447,16 +2448,19 @@ void quic_accept_readable(quux_stream stream) {
       return;
     }
 
+    log_debug(LD_CHANNEL, "QUIC we found the tlschan for this stream");
     sctx->read_cell_pos = 0;
 
     // For the listener-side - this would have been initialised to null in the TLS accept code
     // We pass through this code for each new inbound stream but only need to set it on the first
     if (!tlschan->peer) {
+      log_debug(LD_CHANNEL, "QUIC assigning the peer to its tlschan");
       tlschan->peer = quux_get_peer(stream);
-      if (sctx->tlschan->needs_flush) {
+      if (tlschan->needs_flush) {
+        log_debug(LD_CHANNEL, "QUIC doing a flush of pending write cells");
         // This can happen if we tried to write cells out before the first QUIC stream arrived
         // in that case there would be no way to write the cells so they've been queued
-        sctx->tlschan->needs_flush = 0;
+        tlschan->needs_flush = 0;
         channel_flush_cells(TLS_CHAN_TO_BASE(sctx->tlschan));
       }
     }
@@ -2473,6 +2477,7 @@ void quic_accept_readable(quux_stream stream) {
   while (sctx->read_cell_pos < cell_network_size) {
     int bytes_read = quux_read(stream, sctx->read_cell_buf + sctx->read_cell_pos, cell_network_size - sctx->read_cell_pos);
     if (!bytes_read) {
+      log_debug(LD_CHANNEL, "QUIC paused during first cell read");
       return;
     }
     sctx->read_cell_pos += bytes_read;
@@ -2481,7 +2486,7 @@ void quic_accept_readable(quux_stream stream) {
   channel_timestamp_active(TLS_CHAN_TO_BASE(tlschan));
   circuit_build_times_network_is_live(get_circuit_build_times_mutable());
 
-  log_debug(LD_CHANNEL, "Handling QUIC cell");
+  log_debug(LD_CHANNEL, "QUIC handling cell");
   cell_t cell;
   cell_unpack(&cell, (char*)sctx->read_cell_buf, wide_circ_ids);
   sctx->read_cell_pos = 0;
@@ -2503,7 +2508,7 @@ void quic_accept_readable(quux_stream stream) {
  * Used by both the connect and listen side as the starting point for accepting inbound streams.
  */
 void quic_accept(quux_stream stream) {
-  log_debug(LD_CHANNEL, "QUIC stream accept");
+  log_debug(LD_CHANNEL, "QUIC stream accepted");
   quux_set_readable_cb(stream, quic_accept_readable);
 
   streamcirc_t* sctx = malloc(sizeof(streamcirc_t));
@@ -2519,6 +2524,7 @@ void quic_accept(quux_stream stream) {
 }
 
 void quic_connected(quux_peer peer) {
+  log_debug(LD_CHANNEL, "QUIC got incoming connection");
   quux_set_accept_cb(peer, quic_accept);
 }
 
@@ -2530,6 +2536,8 @@ retry_quic_listener(uint16_t port)
     return 0;
   }
 
+  log_debug(LD_CHANNEL, "QUIC start listener");
+
 #if 0
   struct sockaddr_in addr = { AF_INET, htons(port), { htonl(0x0b000002) } };
 #else
@@ -2538,6 +2546,7 @@ retry_quic_listener(uint16_t port)
 
   tlssecretsmap = tlssecretsmap_new();
   quic_listener = quux_listen((struct sockaddr*) &addr, quic_connected);
+  log_debug(LD_CHANNEL, "QUIC listener started: %p", quic_listener);
 
   if (!quic_listener) {
     log_warn(LD_NET,"QUIC socket creation failed: %s",
@@ -2545,8 +2554,7 @@ retry_quic_listener(uint16_t port)
     return -1;
   }
 
-  log_fn(LOG_NOTICE, LD_NET,
-         "Listening on QUIC UDP port %u.", port);
+  log_fn(LOG_NOTICE, LD_NET, "QUIC listening on UDP port %u.", port);
 
   return 0;
 }
