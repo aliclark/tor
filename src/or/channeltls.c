@@ -244,7 +244,6 @@ void streamcirc_continue_read(quux_stream stream) {
     cell_unpack(&cell, (char*)read_buf, wide_circ_ids);
     sctx->read_cell_pos = 0;
 
-    log_debug(LD_CHANNEL, "Handling QUIC cell");
     channel_tls_handle_cell(&cell, tlschan->conn);
   }
 }
@@ -298,14 +297,14 @@ channel_tls_get_or_create_streamcirc(channel_tls_t *tlschan, circid_t circ_id, q
       // kick the reader into action; should read nothing for the time being
       streamcirc_continue_read(stream);
 
-      log_debug(LD_CHANNEL, "QUIC sendingconnection ID");
+      log_debug(LD_CHANNEL, "QUIC about to send circuit TLS secret");
       // Write the secret along the stream to make sure the other end knows who we are.
       // If the write is incomplete then we'll cause the cell to be buffered.
       // We could be clever and only do this on the control_stream,
       // but it needs extra coding to be safe from race with the circuit streams.
       int secrets_write = streamcirc_attempt_write(sctx, tlschan->tlssecrets, TLSSECRETS_LEN);
       if (secrets_write <= 0) {
-        log_debug(LD_CHANNEL, "QUIC did partial write of the TLS secret");
+        log_debug(LD_CHANNEL, "QUIC not able to write TLS secret immediately");
         return NULL;
       }
     }
