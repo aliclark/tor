@@ -1185,21 +1185,25 @@ streamcircmap_entry_free(streamcircmap_entry_t *ent)
 static INLINE void
 strmap_assign_tmp_key(strmap_entry_t *ent, const char *key)
 {
+  assert(key);
   ent->key = (char*)key;
 }
 static INLINE void
 digestmap_assign_tmp_key(digestmap_entry_t *ent, const char *key)
 {
+  assert(key);
   memcpy(ent->key, key, DIGEST_LEN);
 }
 static INLINE void
 digest256map_assign_tmp_key(digest256map_entry_t *ent, const uint8_t *key)
 {
+  assert(key);
   memcpy(ent->key, key, DIGEST256_LEN);
 }
 static INLINE void
 tlssecretsmap_assign_tmp_key(tlssecretsmap_entry_t *ent, const uint8_t *key)
 {
+  assert(key);
   memcpy(ent->key, key, TLSSECRETS_LEN);
 }
 static INLINE void
@@ -1211,21 +1215,25 @@ streamcircmap_assign_tmp_key(streamcircmap_entry_t *ent, uint32_t key)
 static INLINE void
 strmap_assign_key(strmap_entry_t *ent, const char *key)
 {
+  assert(key);
   ent->key = tor_strdup(key);
 }
 static INLINE void
 digestmap_assign_key(digestmap_entry_t *ent, const char *key)
 {
+  assert(key);
   memcpy(ent->key, key, DIGEST_LEN);
 }
 static INLINE void
 digest256map_assign_key(digest256map_entry_t *ent, const uint8_t *key)
 {
+  assert(key);
   memcpy(ent->key, key, DIGEST256_LEN);
 }
 static INLINE void
 tlssecretsmap_assign_key(tlssecretsmap_entry_t *ent, const uint8_t *key)
 {
+  assert(key);
   memcpy(ent->key, key, TLSSECRETS_LEN);
 }
 static INLINE void
@@ -1261,7 +1269,6 @@ streamcircmap_assign_key(streamcircmap_entry_t *ent, uint32_t key)
     prefix ##_entry_t *resolve;                                         \
     prefix ##_entry_t search;                                           \
     tor_assert(map);                                                    \
-    tor_assert(key);                                                    \
     prefix ##_assign_tmp_key(&search, key);                             \
     resolve = HT_FIND(prefix ##_impl, &map->head, &search);             \
     if (resolve) {                                                      \
@@ -1279,7 +1286,6 @@ streamcircmap_assign_key(streamcircmap_entry_t *ent, uint32_t key)
     prefix##_entry_t search;                                            \
     void *oldval;                                                       \
     tor_assert(map);                                                    \
-    tor_assert(key);                                                    \
     tor_assert(val);                                                    \
     prefix##_assign_tmp_key(&search, key);                              \
     /* We a lot of our time in this function, so the code below is */   \
@@ -1321,7 +1327,6 @@ streamcircmap_assign_key(streamcircmap_entry_t *ent, uint32_t key)
     prefix##_entry_t search;                                            \
     void *oldval;                                                       \
     tor_assert(map);                                                    \
-    tor_assert(key);                                                    \
     prefix##_assign_tmp_key(&search, key);                              \
     resolve = HT_REMOVE(prefix##_impl, &map->head, &search);            \
     if (resolve) {                                                      \
