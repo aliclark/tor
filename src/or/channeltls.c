@@ -581,6 +581,7 @@ channel_tls_handle_incoming(or_connection_t *orconn)
   /* Link the channel and orconn to each other */
   tlschan->conn = orconn;
   orconn->chan = tlschan;
+  tlschan->streamcircmap = streamcircmap_new();
   // Nb. tlschan->peer and others remain null at this point from malloc_zero
 
   if (is_local_addr(&(TO_CONN(orconn)->addr))) {
