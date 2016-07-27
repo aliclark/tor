@@ -411,8 +411,12 @@ channel_tls_connect(const tor_addr_t *addr, uint16_t port,
   }
 
   log_debug(LD_CHANNEL, "Starting QUIC connection");
+  struct sockaddr_in6 sin;
+  tor_addr_to_sockaddr(addr, port, (struct sockaddr*)&sin, sizeof(sin));
+
   tlschan->streamcircmap = streamcircmap_new();
-  tlschan->peer = quux_open("example.com", (struct sockaddr*) &addr);
+  tlschan->peer = quux_open("example.com", (struct sockaddr*) &sin);
+  log_debug(LD_CHANNEL, "Got QUIC connection %p", tlschan->peer);
   quux_set_accept_cb(tlschan->peer, quic_accept);
 
   // The purpose of this stream is to set the crypto handshake in motion.
