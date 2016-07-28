@@ -185,9 +185,8 @@ void streamcirc_continue_write(quux_stream stream) {
 
   } while (pos < count);
 
-  sctx->write_cell_pos = 0;
-
   log_debug(LD_CHANNEL, "QUIC finished write");
+  sctx->write_cell_pos = 0;
 
   if (sctx->tlschan->needs_flush) {
     log_debug(LD_CHANNEL, "QUIC flushing its pending cells");
@@ -232,8 +231,6 @@ void streamcirc_continue_read(quux_stream stream) {
       continue;
     }
 
-    log_debug(LD_CHANNEL, "QUIC read a full cell");
-
     // need this one?
 #if 0
     channel_timestamp_active(TLS_CHAN_TO_BASE(tlschan));
@@ -242,6 +239,8 @@ void streamcirc_continue_read(quux_stream stream) {
 
     cell_t cell;
     cell_unpack(&cell, (char*)read_buf, wide_circ_ids);
+
+    log_debug(LD_CHANNEL, "QUIC read a full cell");
     sctx->read_cell_pos = 0;
 
     channel_tls_handle_cell(&cell, tlschan->conn);
@@ -249,7 +248,7 @@ void streamcirc_continue_read(quux_stream stream) {
 }
 
 static streamcirc_t*
-channel_tls_get_or_create_streamcirc(channel_tls_t *tlschan, circid_t circ_id, quux_stream stream)
+channel_tls_get_streamcirc(channel_tls_t *tlschan, circid_t circ_id)
 {
   streamcirc_t* sctx = streamcircmap_get(tlschan->streamcircmap, circ_id);
 
@@ -262,104 +261,60 @@ channel_tls_get_or_create_streamcirc(channel_tls_t *tlschan, circid_t circ_id, q
       // but it appears we haven't received any QUIC streams from our client yet.
       // We can't connect back yet, so queue the cell until we can.
       // FIXME: TODO: flush the cell again if the peer handle does turn up
-      log_debug(LD_CHANNEL, "QUIC no peer arrived yet, will queue");
+      log_debug(LD_CHANNEL, "QUIC peer not arrived yet, cell will be queued for outbound");
       return NULL;
     }
-    if (circ_id == 0 && !stream) {
-      // no dynamic creation for the control stream, that gets associated manually
+
+    if (circ_id == 0) {
+      // no dynamic creation for the control stream,
+      // that gets associated manually after the initial secret write
       log_debug(LD_CHANNEL, "QUIC attempted dynamic create of control stream!");
       return NULL;
     }
 
-    log_debug(LD_CHANNEL, "QUIC will create a streamcirc for %d, stream %p", circ_id, stream);
+    log_debug(LD_CHANNEL, "QUIC creating a streamcirc for %d", circ_id);
 
     sctx = malloc(sizeof(streamcirc_t));
     sctx->tlschan = tlschan;
-    sctx->stream = stream;
+    sctx->stream = quux_connect(tlschan->peer);
     sctx->read_cell_pos = 0;
     sctx->write_cell_pos = 0;
 
     streamcircmap_set(tlschan->streamcircmap, circ_id, sctx);
 
-    if (stream) {
-      quux_set_stream_context(stream, sctx);
+    quux_set_readable_cb(sctx->stream, streamcirc_continue_read);
+    quux_set_writeable_cb(sctx->stream, streamcirc_continue_write);
+    quux_set_stream_context(sctx->stream, sctx);
 
-    } else {
-      log_debug(LD_CHANNEL, "QUIC connecting to peer for cell write");
-      stream = quux_connect(tlschan->peer);
-      log_debug(LD_CHANNEL, "QUIC got stream for cell write: %p", stream);
-      quux_set_readable_cb(stream, streamcirc_continue_read);
-      quux_set_writeable_cb(stream, streamcirc_continue_write);
+    // kick the reader into action; should read nothing for the time being
+    streamcirc_continue_read(sctx->stream);
 
-      quux_set_stream_context(stream, sctx);
-      sctx->stream = stream;
-
-      // kick the reader into action; should read nothing for the time being
-      streamcirc_continue_read(stream);
-
-      log_debug(LD_CHANNEL, "QUIC about to send circuit TLS secret");
-      // Write the secret along the stream to make sure the other end knows who we are.
-      // If the write is incomplete then we'll cause the cell to be buffered.
-      // We could be clever and only do this on the control_stream,
-      // but it needs extra coding to be safe from race with the circuit streams.
-      int secrets_write = streamcirc_attempt_write(sctx, tlschan->tlssecrets, TLSSECRETS_LEN);
-      if (secrets_write <= 0) {
-        log_debug(LD_CHANNEL, "QUIC not able to write TLS secret immediately");
-        return NULL;
-      }
+    log_debug(LD_CHANNEL, "QUIC about to send circuit TLS secret to circ %d streamcirc %p", circ_id, sctx->stream);
+    // Write the secret along the stream to make sure the other end knows who we are.
+    // If the write is incomplete then we'll cause the cell to be buffered.
+    // We could be clever and only do this on the control_stream,
+    // but it needs extra coding to be safe from race with the circuit streams.
+    int secrets_write = streamcirc_attempt_write(sctx, tlschan->tlssecrets, DIGEST256_LEN);
+    if (secrets_write <= 0) {
+      log_debug(LD_CHANNEL, "QUIC not able to write TLS secret immediately");
+      return NULL;
     }
   }
 
   return sctx;
 }
 
-static streamcirc_t*
-channel_tls_get_streamcirc(channel_tls_t *tlschan, circid_t circ_id)
-{
-  log_debug(LD_CHANNEL, "QUIC get streamcirc %d", circ_id);
-  return channel_tls_get_or_create_streamcirc(tlschan, circ_id, NULL);
-}
-
 void streamcirc_associate_sctx(channel_tls_t *tlschan, circid_t circ_id, streamcirc_t* sctx)
 {
   log_debug(LD_CHANNEL, "QUIC associate streamcirc %d to %p", circ_id, sctx);
 
-  // Called by the listener side. If the map entry existed it would mean
-  // something had gone very wrong, with both sides trying to send an initial cell
-  // with same circid at the same time. Should be impossible due to separated CircID spaces
+  // Called by the listener side, and by the client side for the control stream.
+  // If the map entry existed it would mean something had gone very wrong,
+  // with both sides trying to send an initial cell with same circid at the same time.
+  // Should be impossible due to separated CircID spaces.
   // Or the other side is being malicious - I've ignored that case for now.
   streamcircmap_set(tlschan->streamcircmap, circ_id, sctx);
 }
-
-// nb. This is for use by the client control stream only.
-// The context is different so it won't work with other streams.
-void write_control_stream_tlssecrets(quux_stream stream) {
-
-  log_debug(LD_CHANNEL, "QUIC continue write TLS secret");
-
-  channel_tls_t* tlschan = quux_get_stream_context(stream);
-  do {
-    int bytes_wrote = quux_write(stream,
-        tlschan->tlssecrets + tlschan->cs_secret_pos,
-        sizeof(tlschan->tlssecrets) - tlschan->cs_secret_pos);
-
-    if (!bytes_wrote) {
-      log_debug(LD_CHANNEL, "QUIC paused while writing TLS secret");
-      return;
-    }
-    tlschan->cs_secret_pos += bytes_wrote;
-
-    log_debug(LD_CHANNEL, "QUIC manage partial write of TLS secret");
-
-  } while (tlschan->cs_secret_pos < sizeof(tlschan->tlssecrets));
-
-  log_debug(LD_CHANNEL, "QUIC completed the write of TLS secret");
-
-  // Now the TLS secret is sent we can register it as CircID 0
-  channel_tls_get_or_create_streamcirc(tlschan, 0, tlschan->control_stream);
-}
-
-
 
 /**
  * Do parts of channel_tls_t initialization common to channel_tls_connect()
@@ -456,12 +411,23 @@ channel_tls_connect(const tor_addr_t *addr, uint16_t port,
   quux_set_accept_cb(tlschan->peer, quic_accept);
 
   // The purpose of this stream is to set the crypto handshake in motion.
-  // When we send the AUTHENTICATE cell we'll also use it to send the TLS secret asap.
+  // Once both sides have completed TLS handshake we'll also use it to send the TLS secret asap.
   // After that point, the listener side will be able to connect back to us.
-  tlschan->control_stream = quux_connect(tlschan->peer);
-  log_debug(LD_CHANNEL, "QUIC made control stream %p", tlschan->control_stream);
-  quux_set_writeable_cb(tlschan->control_stream, write_control_stream_tlssecrets);
-  quux_set_stream_context(tlschan->control_stream, tlschan);
+  streamcirc_t* sctx = malloc(sizeof(streamcirc_t));
+  sctx->tlschan = tlschan;
+  sctx->stream = quux_connect(tlschan->peer);
+  sctx->read_cell_pos = 0;
+  sctx->write_cell_pos = 0;
+
+  log_debug(LD_CHANNEL, "QUIC made control streamcirc %p", tlschan->control_streamcirc);
+  quux_set_readable_cb(sctx->stream, streamcirc_continue_read);
+  quux_set_writeable_cb(sctx->stream, streamcirc_continue_write);
+  quux_set_stream_context(sctx->stream, sctx);
+
+  // kick the reader into action; should read nothing for the time being
+  streamcirc_continue_read(sctx->stream);
+
+  tlschan->control_streamcirc = sctx;
 
   log_debug(LD_CHANNEL,
             "Got orconn %p for channel with global id " U64_FORMAT,
@@ -1327,12 +1293,16 @@ channel_tls_handle_state_change_on_orconn(channel_tls_t *chan,
 
     // At this point we've received a VERSIONS cell,
     // which means the other side has definitially finished the handshake, as have we
-    if (conn->chan->control_stream) {
-      char hex[2*TLSSECRETS_LEN+1];
-      base16_encode(hex, 2*TLSSECRETS_LEN+1, (char*)conn->chan->tlssecrets, TLSSECRETS_LEN);
+    streamcirc_t* sctx = conn->chan->control_streamcirc;
+    if (sctx) {
+      char hex[2*DIGEST256_LEN+1];
+      base16_encode(hex, 2*DIGEST256_LEN+1, (char*)conn->chan->tlssecrets, DIGEST256_LEN);
       log_debug(LD_CHANNEL, "QUIC sending auth secret %s for %p", hex, conn->chan);
 
-      write_control_stream_tlssecrets(conn->chan->control_stream);
+      streamcirc_attempt_write(sctx, conn->chan->tlssecrets, DIGEST256_LEN);
+
+      // Now the TLS secret is written we can register the stream as CircID 0
+      streamcirc_associate_sctx(conn->chan, 0, sctx);
     }
 
     /* We might have just become writeable; check and tell the scheduler */
@@ -1898,11 +1868,12 @@ channel_tls_process_versions_cell(var_cell_t *cell, channel_tls_t *chan)
 
     // Now that (re)negotiation is complete, associate the channel
     // with a shared secret based on the master key
+    // afaik, this is the first place we can be sure the listener has finished TLS handshake.
     master_key_digest(chan->conn->tls, chan->tlssecrets);
     tlssecretsmap_set(tlssecretsmap, chan->tlssecrets, chan);
 
-    char hex[2*TLSSECRETS_LEN+1];
-    base16_encode(hex, 2*TLSSECRETS_LEN+1, (char*)chan->tlssecrets, TLSSECRETS_LEN);
+    char hex[2*DIGEST256_LEN+1];
+    base16_encode(hex, 2*DIGEST256_LEN+1, (char*)chan->tlssecrets, DIGEST256_LEN);
     log_debug(LD_CHANNEL, "QUIC got versions auth secret %s for %p", hex, chan);
 
     if (send_versions) {

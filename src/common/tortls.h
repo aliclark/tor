@@ -142,6 +142,6 @@ const char *tor_tls_get_ciphersuite_name(tor_tls_t *tls);
 
 int evaluate_ecgroup_for_tls(const char *ecgroup);
 
-void master_key_digest(tor_tls_t* tls, uint8_t digest[32]);
+void master_key_digest(tor_tls_t* tls, uint8_t digest[DIGEST256_LEN]);
 
 #endif

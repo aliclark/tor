@@ -2435,8 +2435,8 @@ void quic_accept_readable(quux_stream stream) {
   log_debug(LD_CHANNEL, "QUIC continuing with TLS secret read");
 
   if (!sctx->tlschan) {
-    while (sctx->read_cell_pos < TLSSECRETS_LEN) {
-      int bytes_read = quux_read(stream, sctx->read_cell_buf + sctx->read_cell_pos, TLSSECRETS_LEN - sctx->read_cell_pos);
+    while (sctx->read_cell_pos < DIGEST256_LEN) {
+      int bytes_read = quux_read(stream, sctx->read_cell_buf + sctx->read_cell_pos, DIGEST256_LEN - sctx->read_cell_pos);
       if (!bytes_read) {
         log_debug(LD_CHANNEL, "QUIC paused during TLS secret read");
         return;
@@ -2447,14 +2447,15 @@ void quic_accept_readable(quux_stream stream) {
 
     channel_tls_t *tlschan = tlssecretsmap_get(tlssecretsmap, sctx->read_cell_buf);
     if (!tlschan) {
-      char hex[2*TLSSECRETS_LEN+1];
-      base16_encode(hex, 2*TLSSECRETS_LEN+1, (char*)sctx->read_cell_buf, TLSSECRETS_LEN);
+      char hex[2*DIGEST256_LEN+1];
+      base16_encode(hex, 2*DIGEST256_LEN+1, (char*)sctx->read_cell_buf, DIGEST256_LEN);
       log_debug(LD_CHANNEL, "[err] QUIC got invalid auth secret %s", hex);
+      // TODO: close the stream
       return;
     }
 
-    char hex[2*TLSSECRETS_LEN+1];
-    base16_encode(hex, 2*TLSSECRETS_LEN+1, (char*)sctx->read_cell_buf, TLSSECRETS_LEN);
+    char hex[2*DIGEST256_LEN+1];
+    base16_encode(hex, 2*DIGEST256_LEN+1, (char*)sctx->read_cell_buf, DIGEST256_LEN);
     log_debug(LD_CHANNEL, "QUIC valid auth secret %s for %p", hex, sctx->tlschan);
 
     sctx->read_cell_pos = 0;
@@ -2483,6 +2484,8 @@ void quic_accept_readable(quux_stream stream) {
   size_t cell_network_size = get_cell_network_size(wide_circ_ids);
 
   while (sctx->read_cell_pos < cell_network_size) {
+    // TODO: change this to just quux_peek circ_id if/when it exists,
+    // then we can remove the special case first-cell processing code
     int bytes_read = quux_read(stream, sctx->read_cell_buf + sctx->read_cell_pos, cell_network_size - sctx->read_cell_pos);
     if (!bytes_read) {
       log_debug(LD_CHANNEL, "QUIC paused during first cell read");

@@ -19,30 +19,8 @@
 
 #define TLS_CHAN_MAGIC 0x8a192427U
 
-#ifdef TOR_CHANNEL_INTERNAL_
-
-struct channel_tls_s {
-  /* Base channel_t struct */
-  channel_t base_;
-  /* or_connection_t pointer */
-  or_connection_t *conn;
-
-  streamcircmap_t *streamcircmap;
-  quux_peer peer;
-  quux_stream control_stream;
-
-  uint8_t tlssecrets[TLSSECRETS_LEN];
-  // used by the client code during the initial control stream send
-  int cs_secret_pos;
-
-  // unfortunately the flush API is not circuit-centric (yet?)
-  int needs_flush:1;
-};
-
-#endif /* TOR_CHANNEL_INTERNAL_ */
-
 typedef struct streamcirc_s {
-  struct channel_tls_s* tlschan;
+  channel_tls_t* tlschan;
   quux_stream stream;
 
   // store reads of a partial cell from quic
@@ -55,6 +33,26 @@ typedef struct streamcirc_s {
   int write_cell_pos;
 
 } streamcirc_t;
+
+#ifdef TOR_CHANNEL_INTERNAL_
+
+struct channel_tls_s {
+  /* Base channel_t struct */
+  channel_t base_;
+  /* or_connection_t pointer */
+  or_connection_t *conn;
+
+  uint8_t tlssecrets[DIGEST256_LEN];
+
+  streamcircmap_t *streamcircmap;
+  quux_peer peer;
+  streamcirc_t* control_streamcirc;
+
+  // unfortunately the flush API is not circuit-centric (yet?)
+  int needs_flush:1;
+};
+
+#endif /* TOR_CHANNEL_INTERNAL_ */
 
 channel_t * channel_tls_connect(const tor_addr_t *addr, uint16_t port,
                                 const char *id_digest);
@@ -82,7 +80,6 @@ void channel_tls_free_all(void);
 
 int channel_tls_write_cell_method(channel_t *chan, cell_t *cell);
 
-void write_control_stream_tlssecrets(quux_stream stream);
 void streamcirc_continue_read(quux_stream stream);
 void streamcirc_continue_write(quux_stream stream);
 void streamcirc_associate_sctx(struct channel_tls_s *tlschan, circid_t circ_id, struct streamcirc_s* sctx);

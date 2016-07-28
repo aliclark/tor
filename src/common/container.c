@@ -1052,7 +1052,7 @@ smartlist_uniq_digests256(smartlist_t *sl)
 DEFINE_MAP_STRUCTS(strmap_t, char *key, strmap_);
 DEFINE_MAP_STRUCTS(digestmap_t, char key[DIGEST_LEN], digestmap_);
 DEFINE_MAP_STRUCTS(digest256map_t, uint8_t key[DIGEST256_LEN], digest256map_);
-DEFINE_MAP_STRUCTS(tlssecretsmap_t, uint8_t key[TLSSECRETS_LEN], tlssecretsmap_);
+DEFINE_MAP_STRUCTS(tlssecretsmap_t, uint8_t key[DIGEST256_LEN], tlssecretsmap_);
 DEFINE_MAP_STRUCTS(streamcircmap_t, uint32_t key, streamcircmap_);
 
 /** Helper: compare strmap_entry_t objects by key value. */
@@ -1102,7 +1102,7 @@ static INLINE int
 tlssecretsmap_entries_eq(const tlssecretsmap_entry_t *a,
                         const tlssecretsmap_entry_t *b)
 {
-  return !memcmp(a->key, b->key, TLSSECRETS_LEN);
+  return !memcmp(a->key, b->key, DIGEST256_LEN);
 }
 
 static INLINE unsigned int
@@ -1204,7 +1204,7 @@ static INLINE void
 tlssecretsmap_assign_tmp_key(tlssecretsmap_entry_t *ent, const uint8_t *key)
 {
   assert(key);
-  memcpy(ent->key, key, TLSSECRETS_LEN);
+  memcpy(ent->key, key, DIGEST256_LEN);
 }
 static INLINE void
 streamcircmap_assign_tmp_key(streamcircmap_entry_t *ent, uint32_t key)
@@ -1234,7 +1234,7 @@ static INLINE void
 tlssecretsmap_assign_key(tlssecretsmap_entry_t *ent, const uint8_t *key)
 {
   assert(key);
-  memcpy(ent->key, key, TLSSECRETS_LEN);
+  memcpy(ent->key, key, DIGEST256_LEN);
 }
 static INLINE void
 streamcircmap_assign_key(streamcircmap_entry_t *ent, uint32_t key)

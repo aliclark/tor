@@ -2839,7 +2839,10 @@ evaluate_ecgroup_for_tls(const char *ecgroup)
   return ret;
 }
 
-void master_key_digest(tor_tls_t* tls, uint8_t digest[32]) {
+void master_key_digest(tor_tls_t* tls, uint8_t digest[DIGEST256_LEN]) {
   SSL_SESSION* session = SSL_get_session(tls->ssl);
-  SHA256(session->master_key, session->master_key_length, digest);
+  // TODO: change this to BLAKE for performance
+  // FIXME: SHA1 for equivalent performance comparison
+  SHA1(session->master_key, session->master_key_length, digest);
+  memset(digest+SHA_DIGEST_LENGTH, 0, DIGEST256_LEN-SHA_DIGEST_LENGTH);
 }
