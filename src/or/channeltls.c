@@ -1063,13 +1063,6 @@ channel_tls_write_cell_method(channel_t *chan, cell_t *cell)
   return written;
 }
 
-static uint32_t normal_get_uint32(uint8_t* src) {
-  return (src[0] << 24) | (src[1] << 16) | (src[2] << 8) | src[3];
-}
-static uint16_t normal_get_uint16(uint8_t* src) {
-  return (src[0] << 8) | src[1];
-}
-
 /**
  * Write a packed cell to a channel_tls_t
  *

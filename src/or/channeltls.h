@@ -84,6 +84,15 @@ void streamcirc_continue_read(quux_stream stream);
 void streamcirc_continue_write(quux_stream stream);
 void streamcirc_associate_sctx(struct channel_tls_s *tlschan, circid_t circ_id, struct streamcirc_s* sctx);
 
+static uint32_t normal_get_uint32(uint8_t* src);
+static INLINE uint32_t normal_get_uint32(uint8_t* src) {
+  return (src[0] << 24) | (src[1] << 16) | (src[2] << 8) | src[3];
+}
+static uint16_t normal_get_uint16(uint8_t* src);
+static INLINE uint16_t normal_get_uint16(uint8_t* src) {
+  return (src[0] << 8) | src[1];
+}
+
 #ifdef CHANNELTLS_PRIVATE
 STATIC void channel_tls_process_certs_cell(var_cell_t *cell,
                                            channel_tls_t *tlschan);
