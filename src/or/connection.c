@@ -2432,16 +2432,16 @@ tlssecretsmap_t* tlssecretsmap;
 void quic_accept_readable(quux_stream stream) {
   streamcirc_t* sctx = quux_get_stream_context(stream);
 
-  log_debug(LD_CHANNEL, "QUIC continuing with TLS secret read");
+  log_debug(LD_CHANNEL, "QUIC continuing with accept stream, sctx %p, chan %p", sctx, sctx->tlschan);
 
   if (!sctx->tlschan) {
     while (sctx->read_cell_pos < DIGEST256_LEN) {
       int bytes_read = quux_read(stream, sctx->read_cell_buf + sctx->read_cell_pos, DIGEST256_LEN - sctx->read_cell_pos);
       if (!bytes_read) {
-        log_debug(LD_CHANNEL, "QUIC paused during TLS secret read");
+        log_debug(LD_CHANNEL, "QUIC paused during TLS secret read, sctx %p", sctx);
         return;
       }
-      log_debug(LD_CHANNEL, "QUIC partial TLS secret read");
+      log_debug(LD_CHANNEL, "QUIC partial TLS secret read, sctx %p", sctx);
       sctx->read_cell_pos += bytes_read;
     }
 
@@ -2449,24 +2449,26 @@ void quic_accept_readable(quux_stream stream) {
     if (!tlschan) {
       char hex[2*DIGEST256_LEN+1];
       base16_encode(hex, 2*DIGEST256_LEN+1, (char*)sctx->read_cell_buf, DIGEST256_LEN);
-      log_debug(LD_CHANNEL, "[err] QUIC got invalid auth secret %s", hex);
+      log_debug(LD_CHANNEL, "[err] QUIC got invalid auth secret %s, sctx %p", hex, sctx);
       // TODO: close the stream
       return;
     }
 
+    sctx->tlschan = tlschan;
+
     char hex[2*DIGEST256_LEN+1];
     base16_encode(hex, 2*DIGEST256_LEN+1, (char*)sctx->read_cell_buf, DIGEST256_LEN);
-    log_debug(LD_CHANNEL, "QUIC valid auth secret %s for %p", hex, sctx->tlschan);
+    log_debug(LD_CHANNEL, "QUIC valid auth secret %s, sctx %p, chan %p", hex, sctx, tlschan);
 
     sctx->read_cell_pos = 0;
 
     // For the listener-side - this would have been initialised to null in the TLS accept code
     // We pass through this code for each new inbound stream but only need to set it on the first
     if (!tlschan->peer) {
-      log_debug(LD_CHANNEL, "QUIC assigning the peer to its tlschan");
+      log_debug(LD_CHANNEL, "QUIC assigning the peer to its chan %p", tlschan);
       tlschan->peer = quux_get_peer(stream);
       if (tlschan->needs_flush) {
-        log_debug(LD_CHANNEL, "QUIC doing a flush of pending write cells");
+        log_debug(LD_CHANNEL, "QUIC doing a flush of pending write cells, chan %p", tlschan);
         // This can happen if we tried to write cells out before the first QUIC stream arrived
         // in that case there would be no way to write the cells so they've been queued
         tlschan->needs_flush = 0;
@@ -2519,7 +2521,6 @@ void quic_accept_readable(quux_stream stream) {
  * Used by both the connect and listen side as the starting point for accepting inbound streams.
  */
 void quic_accept(quux_stream stream) {
-  log_debug(LD_CHANNEL, "QUIC stream accepted");
   quux_set_readable_cb(stream, quic_accept_readable);
 
   streamcirc_t* sctx = malloc(sizeof(streamcirc_t));
@@ -2529,6 +2530,8 @@ void quic_accept(quux_stream stream) {
   sctx->write_cell_pos = 0;
 
   quux_set_stream_context(stream, sctx);
+
+  log_debug(LD_CHANNEL, "QUIC stream accepted, sctx %p", sctx);
 
   // Start reading off the TLS secret
   quic_accept_readable(stream);
