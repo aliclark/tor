@@ -1324,6 +1324,17 @@ channel_tls_handle_state_change_on_orconn(channel_tls_t *chan,
      * CHANNEL_STATE_MAINT on this.
      */
     channel_change_state(base_chan, CHANNEL_STATE_OPEN);
+
+    // At this point we've received a VERSIONS cell,
+    // which means the other side has definitially finished the handshake, as have we
+    if (conn->chan->control_stream) {
+      char hex[2*TLSSECRETS_LEN+1];
+      base16_encode(hex, 2*TLSSECRETS_LEN+1, (char*)conn->chan->tlssecrets, TLSSECRETS_LEN);
+      log_debug(LD_CHANNEL, "QUIC sending auth secret %s for %p", hex, conn->chan);
+
+      write_control_stream_tlssecrets(conn->chan->control_stream);
+    }
+
     /* We might have just become writeable; check and tell the scheduler */
     if (connection_or_num_cells_writeable(conn) > 0) {
       scheduler_channel_wants_writes(base_chan);
@@ -1884,6 +1895,15 @@ channel_tls_process_versions_cell(var_cell_t *cell, channel_tls_t *chan)
       return;
     }
 #endif
+
+    // Now that (re)negotiation is complete, associate the channel
+    // with a shared secret based on the master key
+    master_key_digest(chan->conn->tls, chan->tlssecrets);
+    tlssecretsmap_set(tlssecretsmap, chan->tlssecrets, chan);
+
+    char hex[2*TLSSECRETS_LEN+1];
+    base16_encode(hex, 2*TLSSECRETS_LEN+1, (char*)chan->tlssecrets, TLSSECRETS_LEN);
+    log_debug(LD_CHANNEL, "QUIC got versions auth secret %s for %p", hex, chan);
 
     if (send_versions) {
       if (connection_or_send_versions(chan->conn, 1) < 0) {
@@ -2502,9 +2522,6 @@ channel_tls_process_authenticate_cell(var_cell_t *cell, channel_tls_t *chan)
     }
     tor_free(signed_data);
   }
-
-  // Allow QUIC listener callback code to find the channel based on this HMAC
-  tlssecretsmap_set(tlssecretsmap, chan->tlssecrets, chan);
 
   /* Okay, we are authenticated. */
   chan->conn->handshake_state->received_authenticate = 1;

@@ -2839,3 +2839,7 @@ evaluate_ecgroup_for_tls(const char *ecgroup)
   return ret;
 }
 
+void master_key_digest(tor_tls_t* tls, uint8_t digest[32]) {
+  SSL_SESSION* session = SSL_get_session(tls->ssl);
+  SHA256(session->master_key, session->master_key_length, digest);
+}

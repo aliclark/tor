@@ -2427,10 +2427,12 @@ static quux_listener quic_listener;
 // it should be safe to use again, provided the UDP stream is also confidential
 //
 // TODO: also want to delete entries once the connection goes away
-tlssecretsmap_t *tlssecretsmap;
+tlssecretsmap_t* tlssecretsmap;
 
 void quic_accept_readable(quux_stream stream) {
   streamcirc_t* sctx = quux_get_stream_context(stream);
+
+  log_debug(LD_CHANNEL, "QUIC continuing with TLS secret read");
 
   if (!sctx->tlschan) {
     while (sctx->read_cell_pos < TLSSECRETS_LEN) {
@@ -2439,16 +2441,22 @@ void quic_accept_readable(quux_stream stream) {
         log_debug(LD_CHANNEL, "QUIC paused during TLS secret read");
         return;
       }
+      log_debug(LD_CHANNEL, "QUIC partial TLS secret read");
       sctx->read_cell_pos += bytes_read;
     }
 
     channel_tls_t *tlschan = tlssecretsmap_get(tlssecretsmap, sctx->read_cell_buf);
     if (!tlschan) {
-      log_debug(LD_CHANNEL, "Got a weird tlssecret on stream, someone's playing shenanigans");
+      char hex[2*TLSSECRETS_LEN+1];
+      base16_encode(hex, 2*TLSSECRETS_LEN+1, (char*)sctx->read_cell_buf, TLSSECRETS_LEN);
+      log_debug(LD_CHANNEL, "[err] QUIC got invalid auth secret %s", hex);
       return;
     }
 
-    log_debug(LD_CHANNEL, "QUIC we found the tlschan for this stream");
+    char hex[2*TLSSECRETS_LEN+1];
+    base16_encode(hex, 2*TLSSECRETS_LEN+1, (char*)sctx->read_cell_buf, TLSSECRETS_LEN);
+    log_debug(LD_CHANNEL, "QUIC valid auth secret %s for %p", hex, sctx->tlschan);
+
     sctx->read_cell_pos = 0;
 
     // For the listener-side - this would have been initialised to null in the TLS accept code

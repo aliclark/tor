@@ -2417,9 +2417,6 @@ connection_or_compute_authenticate_cell_body(or_connection_t *conn,
   /* HMAC of clientrandom and serverrandom using master key : 32 octets */
   tor_tls_get_tlssecrets(conn->tls, auth->tlssecrets);
 
-  // Save the tlssecret so QUIC code can use it to authenticate new streams
-  memcpy(conn->chan->tlssecrets, auth->tlssecrets, TLSSECRETS_LEN);
-
   /* 8 octets were reserved for the current time, but we're trying to get out
    * of the habit of sending time around willynilly.  Fortunately, nothing
    * checks it.  That's followed by 16 bytes of nonce. */
@@ -2527,10 +2524,6 @@ connection_or_send_authenticate_cell,(or_connection_t *conn, int authtype))
 
   connection_or_write_var_cell_to_buf(cell, conn);
   var_cell_free(cell);
-
-  // Now that we've done enough handshake to create the AUTHENTICATE cell above,
-  // we can send the computed tlssecret along the control stream so it can identify the TLS chan.
-  write_control_stream_tlssecrets(conn->chan->control_stream);
 
   return 0;
 }
