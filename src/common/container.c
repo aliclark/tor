@@ -1115,7 +1115,7 @@ static INLINE int
 streamcircmap_entries_eq(const streamcircmap_entry_t *a,
                         const streamcircmap_entry_t *b)
 {
-  return a->key != b->key;
+  return a->key == b->key;
 }
 
 static INLINE unsigned int
