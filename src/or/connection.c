@@ -2476,42 +2476,39 @@ void quic_accept_readable(quux_stream stream) {
       }
     }
 
-    sctx->tlschan = tlschan;
-
-    // continue reading the first cell, which will identify the circuit
+    // continue reading the circ_id of the first cell, to identify the circuit
   }
 
   channel_tls_t *tlschan = sctx->tlschan;
   int wide_circ_ids = tlschan->conn->wide_circ_ids;
-  size_t cell_network_size = get_cell_network_size(wide_circ_ids);
+  int circ_id_size = get_circ_id_size(wide_circ_ids);
 
-  while (sctx->read_cell_pos < cell_network_size) {
-    // TODO: change this to just quux_peek circ_id if/when it exists,
-    // then we can remove the special case first-cell processing code
-    int bytes_read = quux_read(stream, sctx->read_cell_buf + sctx->read_cell_pos, cell_network_size - sctx->read_cell_pos);
+  while (sctx->read_cell_pos < circ_id_size) {
+    int bytes_read = quux_read(stream, sctx->read_cell_buf + sctx->read_cell_pos, circ_id_size - sctx->read_cell_pos);
     if (!bytes_read) {
-      log_debug(LD_CHANNEL, "QUIC paused during first cell read");
+      log_debug(LD_CHANNEL, "QUIC paused during circ_id read, chan %p", tlschan);
       return;
     }
     sctx->read_cell_pos += bytes_read;
   }
 
-  channel_timestamp_active(TLS_CHAN_TO_BASE(tlschan));
-  circuit_build_times_network_is_live(get_circuit_build_times_mutable());
+  // we've now read the first part of the first cell.
+  // We'll leave read_cell_pos where it is, for the standard cell read code to fetch the rest
+  circid_t circ_id;
+  if (tlschan->conn->wide_circ_ids) {
+    circ_id = ntohl(normal_get_uint32(sctx->read_cell_buf));
+  } else {
+    circ_id = ntohs(normal_get_uint16(sctx->read_cell_buf));
+  }
 
-  log_debug(LD_CHANNEL, "QUIC handling cell");
-  cell_t cell;
-  cell_unpack(&cell, (char*)sctx->read_cell_buf, wide_circ_ids);
-  sctx->read_cell_pos = 0;
+  log_debug(LD_CHANNEL, "QUIC got circ_id %d, chan %p", circ_id, tlschan);
 
-  // now we have the first cell we can continue using the normal read cell logic
+  // now we have circ_id we can continue using the normal read cell logic
   quux_set_readable_cb(stream, streamcirc_continue_read);
   quux_set_writeable_cb(stream, streamcirc_continue_write);
 
   // Associate the stream to this circuit on the tlschan, so the write_cell code can find it
-  streamcirc_associate_sctx(tlschan, cell.circ_id, sctx);
-
-  channel_tls_handle_cell(&cell, tlschan->conn);
+  streamcirc_associate_sctx(tlschan, circ_id, sctx);
 
   // continue with normal cell processing
   streamcirc_continue_read(stream);
