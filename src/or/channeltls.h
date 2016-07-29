@@ -49,6 +49,7 @@ struct channel_tls_s {
   streamcirc_t* control_streamcirc;
 
   // unfortunately the flush API is not circuit-centric (yet?)
+  int buffered_cs_id:1;
   int needs_flush:1;
 };
 

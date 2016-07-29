@@ -251,6 +251,24 @@ static void streamcirc_continue_read(quux_stream stream) {
   }
 }
 
+/**
+ * It's not pretty to have this logic, but I can't think of a much better
+ * solution except maybe having one control stream for each direction
+ */
+static int maybe_get_cs_shift(channel_tls_t *tlschan, circid_t circ_id) {
+  if (circ_id != 0 || !tlschan->buffered_cs_id) {
+    return 0;
+  }
+  return get_circ_id_size(tlschan->conn->wide_circ_ids);
+}
+
+static void maybe_clear_cs_shift(channel_tls_t *tlschan, circid_t circ_id) {
+  if (circ_id != 0) {
+    return;
+  }
+  tlschan->buffered_cs_id = 0;
+}
+
 static streamcirc_t* channel_tls_get_streamcirc(channel_tls_t *tlschan, circid_t circ_id) {
 
   streamcirc_t* sctx = streamcircmap_get(tlschan->streamcircmap, circ_id);
@@ -263,15 +281,23 @@ static streamcirc_t* channel_tls_get_streamcirc(channel_tls_t *tlschan, circid_t
       // This means we're the listener side trying to write cells out,
       // but it appears we haven't received any QUIC streams from our client yet.
       // We can't connect back yet, so queue the cell until we can.
-      // FIXME: TODO: flush the cell again if the peer handle does turn up
       log_debug(LD_CHANNEL, "QUIC peer not arrived yet, circ_id %u cell will be queued for outbound, chan %p", circ_id, tlschan);
+      sctx->tlschan->needs_flush = 1;
       return NULL;
     }
 
     if (circ_id == 0) {
       // no dynamic creation for the control stream,
       // that gets associated manually after the initial secret write
-      log_debug(LD_CHANNEL, "QUIC attempted dynamic create of control stream!, chan %p", tlschan);
+      log_debug(LD_CHANNEL, "ERROR BAD: QUIC attempted dynamic create of control stream!, chan %p", tlschan);
+
+      // FIXME: there's a problem in that the initiator might not want to send
+      // a cell on the control stream for some time, which would mean
+      // the listener would have no way of knowing which is the control stream
+      // if it wanted to send a cell.
+      // Therefore we should either keep control cells going down TLS (probs not clever for traffic analysis),
+      // or should indicate the control stream early, possibly using a padding cell.
+
       return NULL;
     }
 
@@ -292,6 +318,17 @@ static streamcirc_t* channel_tls_get_streamcirc(channel_tls_t *tlschan, circid_t
     // kick the reader into action; should read nothing for the time being
     streamcirc_continue_read(sctx->stream);
 
+    // XXX: NB: potentially consequential departure from the original protocol
+    // in that previously once the OR->OR connection was set up, cell writes would
+    // all be 512/514 bytes with the exception of var cells.
+    // Now we also have that the initial send of a stream is a 32 byte secret.
+    // I don't *think* this is an issue - the data cells are still opaque, the 32 bytes
+    // should might still be resegmented onto another packet (?) and probably
+    // if you squint hard enough the CREATE/CREATED pattern may be discernable already (?)
+    //
+    // The same applies to the control_stream secret, albeit that that is
+    // very close to the TLS handshake, which is definitely observable.
+
     log_debug(LD_CHANNEL, "QUIC about to send circuit TLS secret to circ %u streamcirc %p, chan %p", circ_id, sctx->stream, tlschan);
     // Write the secret along the stream to make sure the other end knows who we are.
     // If the write is incomplete then we'll cause the cell to be buffered.
@@ -309,13 +346,12 @@ static streamcirc_t* channel_tls_get_streamcirc(channel_tls_t *tlschan, circid_t
 
 static void streamcirc_associate_sctx(channel_tls_t *tlschan, circid_t circ_id, streamcirc_t* sctx) {
 
-  log_debug(LD_CHANNEL, "QUIC associate streamcirc %u to %p, chan %p", circ_id, sctx, tlschan);
-
   // Called by the listener side, and by the client side for the control stream.
   // If the map entry existed it would mean something had gone very wrong,
   // with both sides trying to send an initial cell with same circid at the same time.
   // Should be impossible due to separated CircID spaces.
   // Or the other side is being malicious - I've ignored that case for now.
+  log_debug(LD_CHANNEL, "QUIC associate streamcirc %u to %p, chan %p", circ_id, sctx, tlschan);
   streamcircmap_set(tlschan->streamcircmap, circ_id, sctx);
 }
 
@@ -535,6 +571,9 @@ channel_tls_connect(const tor_addr_t *addr, uint16_t port,
   sctx->stream = quux_connect(tlschan->peer);
   sctx->read_cell_pos = 0;
   sctx->write_cell_pos = 0;
+
+  // XXX: possible perf regression: we now do slow start twice,
+  // once for TLS, then again on the quic conn
 
   tlschan->control_streamcirc = sctx;
 
@@ -1154,13 +1193,15 @@ channel_tls_write_cell_method(channel_t *chan, cell_t *cell)
 
     cell_pack(&networkcell, cell, tlschan->conn->wide_circ_ids);
 
-    int wrote = streamcirc_attempt_write(sctx, (uint8_t*)networkcell.body, cell_network_size);
+    int css = maybe_get_cs_shift(tlschan, cell->circ_id);
+    int wrote = streamcirc_attempt_write(sctx, (uint8_t*)networkcell.body+css, cell_network_size-css);
 
     log_debug(LD_CHANNEL, "QUIC asked to write %s cell %lu bytes, status %d, chan %p", cell_command_to_string(cell->command), cell_network_size, wrote, chan);
 
     if (wrote < 0) {
       return 0;
     }
+    maybe_clear_cs_shift(tlschan, cell->circ_id);
 
     // By the function comment it sounds like this only relates to standard conns
 #if 0
@@ -1215,7 +1256,8 @@ channel_tls_write_packed_cell_method(channel_t *chan,
 
     log_debug(LD_CHANNEL, "About to write %zu", cell_network_size);
 
-    int wrote = streamcirc_attempt_write(sctx, (uint8_t*)packed_cell->body, cell_network_size);
+    int css = maybe_get_cs_shift(tlschan, circ_id);
+    int wrote = streamcirc_attempt_write(sctx, (uint8_t*)packed_cell->body+css, cell_network_size-css);
 
     int cell_command = packed_cell->body[get_circ_id_size(tlschan->conn->wide_circ_ids)];
     log_debug(LD_CHANNEL, "QUIC asked to write circuit %u packed %s cell QUIC %lu bytes, status %d, chan %p",
@@ -1224,6 +1266,7 @@ channel_tls_write_packed_cell_method(channel_t *chan,
     if (wrote < 0) {
       return 0;
     }
+    maybe_clear_cs_shift(tlschan, circ_id);
 
     /* This is where the cell is finished; used to be done from relay.c */
     packed_cell_free(packed_cell);
@@ -1275,13 +1318,15 @@ channel_tls_write_var_cell_method(channel_t *chan, var_cell_t *var_cell)
     // could change it to use an iovec array but meh
     memcpy(buf + n, var_cell->payload, var_cell->payload_len);
 
-    int wrote = streamcirc_attempt_write(sctx, buf, total_len);
+    int css = maybe_get_cs_shift(tlschan, var_cell->circ_id);
+    int wrote = streamcirc_attempt_write(sctx, buf+css, total_len-css);
 
     log_debug(LD_CHANNEL, "QUIC Asked to write %s var cell %d bytes, status %d, chan %p", cell_command_to_string(var_cell->command), total_len, wrote, chan);
 
     if (wrote < 0) {
       return 0;
     }
+    maybe_clear_cs_shift(tlschan, var_cell->circ_id);
 
     // By the function comment it sounds like this only relates to standard conns
 #if 0
@@ -1405,16 +1450,26 @@ channel_tls_handle_state_change_on_orconn(channel_tls_t *chan,
 
     // At this point we've received a VERSIONS cell,
     // which means the other side has definitially finished the handshake, as have we
-    streamcirc_t* sctx = conn->chan->control_streamcirc;
+    streamcirc_t* sctx = chan->control_streamcirc;
     if (sctx) {
       char hex[2*DIGEST256_LEN+1];
-      base16_encode(hex, 2*DIGEST256_LEN+1, (char*)conn->chan->tlssecrets, DIGEST256_LEN);
-      log_debug(LD_CHANNEL, "QUIC sending auth secret %s for, chan %p", hex, conn->chan);
+      base16_encode(hex, 2*DIGEST256_LEN+1, (char*)chan->tlssecrets, DIGEST256_LEN);
+      log_debug(LD_CHANNEL, "QUIC sending auth secret %s for, chan %p", hex, chan);
 
-      streamcirc_attempt_write(sctx, conn->chan->tlssecrets, DIGEST256_LEN);
+      // streamcirc_attempt_write works in single block writes, so need to join the two items
+      uint8_t control_buf[DIGEST256_LEN+sizeof(circid_t)];
+      int circ_id_size = get_circ_id_size(conn->wide_circ_ids);
+      memcpy(control_buf, chan->tlssecrets, DIGEST256_LEN);
+      // We need to write circ_id early, otherwise the listener will have
+      // no recourse for sending cells on the control stream until we have done.
+      // We could have sent a padding cell, just that it's a bit wasteful of bw.
+      memset(control_buf+DIGEST256_LEN, 0, circ_id_size);
+
+      streamcirc_attempt_write(sctx, control_buf, DIGEST256_LEN+circ_id_size);
 
       // Now the TLS secret is written we can register the stream as CircID 0
-      streamcirc_associate_sctx(conn->chan, 0, sctx);
+      streamcirc_associate_sctx(chan, 0, sctx);
+      chan->buffered_cs_id = 1;
     }
 
     /* We might have just become writeable; check and tell the scheduler */
