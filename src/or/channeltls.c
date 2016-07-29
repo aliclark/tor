@@ -96,11 +96,10 @@ static int command_allowed_before_handshake(uint8_t command);
 static int enter_v3_handshake_with_cell(var_cell_t *cell,
                                         channel_tls_t *tlschan);
 
-// Not patching the original fns so as to keep perf comparison as similar as possible
-static uint32_t normal_get_uint32(uint8_t* src) {
+static uint32_t net_get_uint32(uint8_t* src) {
   return (src[0] << 24) | (src[1] << 16) | (src[2] << 8) | src[3];
 }
-static uint16_t normal_get_uint16(uint8_t* src) {
+static uint16_t net_get_uint16(uint8_t* src) {
   return (src[0] << 8) | src[1];
 }
 
@@ -431,9 +430,9 @@ static void quic_accept_readable(quux_stream stream) {
   // We'll leave read_cell_pos where it is, for the standard cell read code to fetch the rest
   circid_t circ_id;
   if (tlschan->conn->wide_circ_ids) {
-    circ_id = ntohl(normal_get_uint32(sctx->read_cell_buf));
+    circ_id = net_get_uint32(sctx->read_cell_buf);
   } else {
-    circ_id = ntohs(normal_get_uint16(sctx->read_cell_buf));
+    circ_id = net_get_uint16(sctx->read_cell_buf);
   }
 
   log_debug(LD_CHANNEL, "QUIC got circ_id %d, chan %p", circ_id, tlschan);
@@ -1242,9 +1241,9 @@ channel_tls_write_packed_cell_method(channel_t *chan,
   if (tlschan->conn) {
     circid_t circ_id;
     if (tlschan->conn->wide_circ_ids) {
-      circ_id = ntohl(normal_get_uint32((uint8_t*)packed_cell->body));
+      circ_id = net_get_uint32((uint8_t*)packed_cell->body);
     } else {
-      circ_id = ntohs(normal_get_uint16((uint8_t*)packed_cell->body));
+      circ_id = net_get_uint16((uint8_t*)packed_cell->body);
     }
 
     streamcirc_t* sctx = channel_tls_get_streamcirc(tlschan, circ_id);
