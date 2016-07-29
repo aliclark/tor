@@ -87,7 +87,7 @@
 #include <systemd/sd-daemon.h>
 #endif
 
-#include "../../../libquic/src/quux/quux.h"
+#include <quux.h>
 
 void evdns_shutdown(int);
 

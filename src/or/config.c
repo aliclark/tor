@@ -65,6 +65,8 @@
 #include <systemd/sd-daemon.h>
 #endif
 
+#include <quux.h>
+
 /* From main.c */
 extern int quiet_level;
 
