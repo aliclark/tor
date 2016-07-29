@@ -392,7 +392,10 @@ static void quic_accept_readable(quux_stream stream) {
       char hex[2*DIGEST256_LEN+1];
       base16_encode(hex, 2*DIGEST256_LEN+1, (char*)sctx->read_cell_buf, DIGEST256_LEN);
       log_debug(LD_CHANNEL, "[err] QUIC got invalid auth secret %s, sctx %p", hex, sctx);
-      // TODO: close the stream
+
+      quux_read_close(stream);
+      quux_write_close(stream);
+      free(sctx);
       return;
     }
 
