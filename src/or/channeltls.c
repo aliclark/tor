@@ -123,6 +123,14 @@ static uint16_t net_get_uint16(uint8_t* src) {
  *
  */
 
+/**
+ * NB. protocol change: there is no longer a guaranteed happens-after
+ * for cell writes to control circuit vs. other circuits.
+ *
+ * If a dependency does exist some other change may be needed, like
+ * duplicating the control cell to all of the affected circuit streams.
+ */
+
 /*
  * count must be <= CELL_MAX_NETWORK_SIZE
  *
@@ -385,6 +393,16 @@ static void quic_accept_readable(quux_stream stream) {
       base16_encode(hex, 2*DIGEST256_LEN+1, (char*)sctx->read_cell_buf, DIGEST256_LEN);
       log_debug(LD_CHANNEL, "[err] QUIC got invalid auth secret %s, sctx %p", hex, sctx);
       // TODO: close the stream
+      return;
+    }
+
+    // If tlschan is not in state OPEN then we've got a bit ahead of ourselves.
+    // We should not read cells off the network until we go state OPEN
+    if (!CHANNEL_IS_OPEN(TLS_CHAN_TO_BASE(tlschan))) {
+      if (!tlschan->paused_circuits) {
+        tlschan->paused_circuits = smartlist_new();
+      }
+      smartlist_add(tlschan->paused_circuits, stream);
       return;
     }
 
@@ -1469,6 +1487,15 @@ channel_tls_handle_state_change_on_orconn(channel_tls_t *chan,
       // Now the TLS secret is written we can register the stream as CircID 0
       streamcirc_associate_sctx(chan, 0, sctx);
       chan->buffered_cs_id = 1;
+
+    } else {
+      // the client goes OPEN before the listener, so may already have had circuits too early
+      if (chan->paused_circuits) {
+        SMARTLIST_FOREACH(chan->paused_circuits, quux_stream, stream,
+            quic_accept_readable(stream));
+      }
+      smartlist_free(chan->paused_circuits);
+      chan->paused_circuits = NULL;
     }
 
     /* We might have just become writeable; check and tell the scheduler */

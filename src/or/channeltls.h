@@ -48,6 +48,8 @@ struct channel_tls_s {
   quux_peer peer;
   streamcirc_t* control_streamcirc;
 
+  smartlist_t* paused_circuits;
+
   // unfortunately the flush API is not circuit-centric (yet?)
   int buffered_cs_id:1;
   int needs_flush:1;
