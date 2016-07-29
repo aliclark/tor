@@ -15,8 +15,6 @@
 /* XXXX For buf_datalen in inline function */
 #include "buffers.h"
 
-#include <quux.h>
-
 const char *conn_type_to_string(int type);
 const char *conn_state_to_string(int type, int state);
 int conn_listener_type_supports_af_unix(int type);
@@ -38,9 +36,6 @@ void connection_mark_for_close_(connection_t *conn,
                                 int line, const char *file);
 void connection_mark_for_close_internal_(connection_t *conn,
                                          int line, const char *file);
-
-void quic_accept(quux_stream stream);
-extern tlssecretsmap_t *tlssecretsmap;
 
 #define connection_mark_for_close(c) \
   connection_mark_for_close_((c), __LINE__, SHORT_FILE__)

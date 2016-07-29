@@ -61,8 +61,6 @@
 #include <sys/un.h>
 #endif
 
-#include "circuitstats.h"
-
 static connection_t *connection_listener_new(
                                const struct sockaddr *listensockaddr,
                                socklen_t listensocklen, int type,
@@ -2418,123 +2416,9 @@ retry_listener_ports(smartlist_t *old_conns,
   return r;
 }
 
-
 static quux_listener quic_listener;
 
-// An hmac using the tls master key. This is a sort of replay
-// of the AUTHENTICATE cell sent over the wire, but since
-// that should be confidential to just the TLS conn
-// it should be safe to use again, provided the UDP stream is also confidential
-//
-// TODO: also want to delete entries once the connection goes away
-tlssecretsmap_t* tlssecretsmap;
-
-void quic_accept_readable(quux_stream stream) {
-  streamcirc_t* sctx = quux_get_stream_context(stream);
-
-  log_debug(LD_CHANNEL, "QUIC continuing with accept stream, sctx %p, chan %p", sctx, sctx->tlschan);
-
-  if (!sctx->tlschan) {
-    while (sctx->read_cell_pos < DIGEST256_LEN) {
-      int bytes_read = quux_read(stream, sctx->read_cell_buf + sctx->read_cell_pos, DIGEST256_LEN - sctx->read_cell_pos);
-      if (!bytes_read) {
-        log_debug(LD_CHANNEL, "QUIC paused during TLS secret read, sctx %p", sctx);
-        return;
-      }
-      log_debug(LD_CHANNEL, "QUIC partial TLS secret read, sctx %p", sctx);
-      sctx->read_cell_pos += bytes_read;
-    }
-
-    channel_tls_t *tlschan = tlssecretsmap_get(tlssecretsmap, sctx->read_cell_buf);
-    if (!tlschan) {
-      char hex[2*DIGEST256_LEN+1];
-      base16_encode(hex, 2*DIGEST256_LEN+1, (char*)sctx->read_cell_buf, DIGEST256_LEN);
-      log_debug(LD_CHANNEL, "[err] QUIC got invalid auth secret %s, sctx %p", hex, sctx);
-      // TODO: close the stream
-      return;
-    }
-
-    sctx->tlschan = tlschan;
-
-    char hex[2*DIGEST256_LEN+1];
-    base16_encode(hex, 2*DIGEST256_LEN+1, (char*)sctx->read_cell_buf, DIGEST256_LEN);
-    log_debug(LD_CHANNEL, "QUIC valid auth secret %s, sctx %p, chan %p", hex, sctx, tlschan);
-
-    sctx->read_cell_pos = 0;
-
-    // For the listener-side - this would have been initialised to null in the TLS accept code
-    // We pass through this code for each new inbound stream but only need to set it on the first
-    if (!tlschan->peer) {
-      log_debug(LD_CHANNEL, "QUIC assigning the peer to its chan %p", tlschan);
-      tlschan->peer = quux_get_peer(stream);
-      if (tlschan->needs_flush) {
-        log_debug(LD_CHANNEL, "QUIC doing a flush of pending write cells, chan %p", tlschan);
-        // This can happen if we tried to write cells out before the first QUIC stream arrived
-        // in that case there would be no way to write the cells so they've been queued
-        tlschan->needs_flush = 0;
-        channel_flush_cells(TLS_CHAN_TO_BASE(sctx->tlschan));
-      }
-    }
-
-    // continue reading the circ_id of the first cell, to identify the circuit
-  }
-
-  channel_tls_t *tlschan = sctx->tlschan;
-  int wide_circ_ids = tlschan->conn->wide_circ_ids;
-  int circ_id_size = get_circ_id_size(wide_circ_ids);
-
-  while (sctx->read_cell_pos < circ_id_size) {
-    int bytes_read = quux_read(stream, sctx->read_cell_buf + sctx->read_cell_pos, circ_id_size - sctx->read_cell_pos);
-    if (!bytes_read) {
-      log_debug(LD_CHANNEL, "QUIC paused during circ_id read, chan %p", tlschan);
-      return;
-    }
-    sctx->read_cell_pos += bytes_read;
-  }
-
-  // we've now read the first part of the first cell.
-  // We'll leave read_cell_pos where it is, for the standard cell read code to fetch the rest
-  circid_t circ_id;
-  if (tlschan->conn->wide_circ_ids) {
-    circ_id = ntohl(normal_get_uint32(sctx->read_cell_buf));
-  } else {
-    circ_id = ntohs(normal_get_uint16(sctx->read_cell_buf));
-  }
-
-  log_debug(LD_CHANNEL, "QUIC got circ_id %d, chan %p", circ_id, tlschan);
-
-  // now we have circ_id we can continue using the normal read cell logic
-  quux_set_readable_cb(stream, streamcirc_continue_read);
-  quux_set_writeable_cb(stream, streamcirc_continue_write);
-
-  // Associate the stream to this circuit on the tlschan, so the write_cell code can find it
-  streamcirc_associate_sctx(tlschan, circ_id, sctx);
-
-  // continue with normal cell processing
-  streamcirc_continue_read(stream);
-}
-
-/**
- * Used by both the connect and listen side as the starting point for accepting inbound streams.
- */
-void quic_accept(quux_stream stream) {
-  quux_set_readable_cb(stream, quic_accept_readable);
-
-  streamcirc_t* sctx = malloc(sizeof(streamcirc_t));
-  sctx->tlschan = NULL;
-  sctx->stream = stream;
-  sctx->read_cell_pos = 0;
-  sctx->write_cell_pos = 0;
-
-  quux_set_stream_context(stream, sctx);
-
-  log_debug(LD_CHANNEL, "QUIC stream accepted, sctx %p", sctx);
-
-  // Start reading off the TLS secret
-  quic_accept_readable(stream);
-}
-
-void quic_connected(quux_peer peer) {
+static void quic_connected(quux_peer peer) {
   log_debug(LD_CHANNEL, "QUIC got incoming connection");
   quux_set_accept_cb(peer, quic_accept);
 }
