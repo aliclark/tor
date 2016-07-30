@@ -396,6 +396,14 @@ static void quic_accept_readable(quux_stream stream) {
       sctx->read_cell_pos += bytes_read;
     }
 
+    /*
+     * FIXME: possible timing oracle on the hash value could allow
+     * an adversary to hijack an existing circuit or make their own for the chan
+     * Possible mitigations:
+     * 1) move the stream close into main's 1 second timer,
+     * 2) ensure that all inbound streams must have the same secret as their control stream
+     * The latter seems sufficient, and a good idea in any case.
+     */
     channel_tls_t *tlschan = tlssecretsmap_get(tlssecretsmap, sctx->read_cell_buf);
     if (!tlschan) {
       char hex[2*DIGEST256_LEN+1];
