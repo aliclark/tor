@@ -168,6 +168,11 @@ static int streamcirc_attempt_write(streamcirc_t* sctx, const uint8_t* src, size
 
   log_debug(LD_CHANNEL, "QUIC attempted write successful");
 
+
+  // XXX: is this needed?
+  connection_or_flushed_some(sctx->tlschan->conn);
+  channel_notify_flushed(TLS_CHAN_TO_BASE(sctx->tlschan));
+
   return 1;
 }
 
@@ -198,6 +203,10 @@ static void streamcirc_continue_write(quux_stream stream) {
 
   log_debug(LD_CHANNEL, "QUIC finished write");
   sctx->write_cell_pos = 0;
+
+  // XXX: is this needed?
+  connection_or_flushed_some(sctx->tlschan->conn);
+  channel_notify_flushed(TLS_CHAN_TO_BASE(sctx->tlschan));
 
   if (sctx->tlschan->needs_flush) {
     log_debug(LD_CHANNEL, "QUIC flushing its pending cells");
@@ -243,7 +252,7 @@ static void streamcirc_continue_read(quux_stream stream) {
     }
 
     // need this one?
-#if 0
+#if 1
     channel_timestamp_active(TLS_CHAN_TO_BASE(tlschan));
 #endif
     circuit_build_times_network_is_live(get_circuit_build_times_mutable());
@@ -1182,6 +1191,8 @@ channel_tls_num_cells_writeable_method(channel_t *chan)
   if (n > INT_MAX) n = INT_MAX;
 #endif
 
+  //hax
+  return CEIL_DIV(OR_CONN_HIGHWATER, cell_network_size);
   return (int)n;
 }
 
@@ -1224,7 +1235,7 @@ channel_tls_write_cell_method(channel_t *chan, cell_t *cell)
     maybe_clear_cs_shift(tlschan, cell->circ_id);
 
     // By the function comment it sounds like this only relates to standard conns
-#if 0
+#if 1
     /* Touch the channel's active timestamp if there is one */
     if (tlschan->conn->chan)
       channel_timestamp_active(TLS_CHAN_TO_BASE(tlschan->conn->chan));
@@ -1349,7 +1360,7 @@ channel_tls_write_var_cell_method(channel_t *chan, var_cell_t *var_cell)
     maybe_clear_cs_shift(tlschan, var_cell->circ_id);
 
     // By the function comment it sounds like this only relates to standard conns
-#if 0
+#if 1
     /* Touch the channel's active timestamp if there is one */
     if (tlschan->conn->chan)
       channel_timestamp_active(TLS_CHAN_TO_BASE(tlschan->conn->chan));

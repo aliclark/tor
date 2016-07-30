@@ -619,6 +619,8 @@ connection_or_num_cells_writeable(or_connection_t *conn)
     n = CEIL_DIV(OR_CONN_HIGHWATER - datalen, cell_network_size);
   }
 
+  log_debug(LD_CHANNEL,"chan: %p outbuf_len: %zu", conn->chan, datalen);
+
   return n;
 }
 
