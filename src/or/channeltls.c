@@ -890,31 +890,11 @@ channel_tls_free_method(channel_t *chan)
 static double
 channel_tls_get_overhead_estimate_method(channel_t *chan)
 {
-  double overhead = 1.0f;
-  channel_tls_t *tlschan = BASE_CHAN_TO_TLS(chan);
-
-  tor_assert(tlschan);
-  tor_assert(tlschan->conn);
-
-  /* Just return 1.0f if we don't have sensible data */
-  if (tlschan->conn->bytes_xmitted > 0 &&
-      tlschan->conn->bytes_xmitted_by_tls >=
-      tlschan->conn->bytes_xmitted) {
-    overhead = ((double)(tlschan->conn->bytes_xmitted_by_tls)) /
-      ((double)(tlschan->conn->bytes_xmitted));
-
-    /*
-     * Never estimate more than 2.0; otherwise we get silly large estimates
-     * at the very start of a new TLS connection.
-     */
-    if (overhead > 2.0f) overhead = 2.0f;
-  }
-
-  log_debug(LD_CHANNEL,
-            "Estimated overhead ratio for TLS chan " U64_FORMAT " is %f",
-            U64_PRINTF_ARG(chan->global_identifier), overhead);
-
-  return overhead;
+  // quux doesn't provide this type of information.
+  // It's not a very good idea in general.
+  // Tor doesn't need to faff about with this crap -
+  // its use-case works just fine without it - and it shouldn't.
+  return 1.0f;
 }
 
 /**
@@ -1034,6 +1014,9 @@ channel_tls_get_remote_descr_method(channel_t *chan, int flags)
  *
  * This implements the has_queued_writes method for channel_tls t_; it returns
  * 1 iff we have queued writes on the outbuf of the underlying or_connection_t.
+ *
+ * For QUIC this doesn't make much sense without knowing a circuit ID
+ * but 0 works fine as a default.
  */
 
 static int
@@ -1158,6 +1141,9 @@ channel_tls_matches_target_method(channel_t *chan,
 /**
  * Tell the upper layer how many bytes we have queued and not yet
  * sent.
+ *
+ * For QUIC this doesn't make much sense without knowing a circuit ID
+ * but 0 works fine as a default.
  */
 
 static size_t

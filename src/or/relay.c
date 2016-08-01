@@ -2545,6 +2545,18 @@ set_streams_blocked_on_circ(circuit_t *circ, channel_t *chan,
     }
   }
 
+  // XXX: with QUIC we now have the ability to stop reading the
+  // stream related to a circuit here, which is not possible with
+  // TCP or SCTP because doing so would block the entire connection
+  // and so interfere with other circuits.
+  //
+  // For the foreseeable future we need to keep using
+  // SENDME while there are still circuits being built which use TCP conns,
+  // so for performance comparisons we'll leave the behaviour as-is.
+  //
+  // In practice the QUIC circuits should pause anyway to protect against
+  // DoS using Sniper attack.
+
   return n;
 }
 
