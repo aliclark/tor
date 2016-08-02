@@ -2419,7 +2419,9 @@ retry_listener_ports(smartlist_t *old_conns,
 static quux_listener quic_listener;
 
 static void quic_connected(quux_peer peer) {
+#if QUUX_LOG
   log_debug(LD_CHANNEL, "QUIC got incoming connection");
+#endif
   quux_set_accept_cb(peer, quic_accept);
 }
 
@@ -2427,11 +2429,15 @@ static int
 retry_quic_listener(uint16_t port)
 {
   if (quic_listener) {
+#if QUUX_LOG
     log_debug(LD_NET, "QUIC already listening");
+#endif
     return 0;
   }
 
+#if QUUX_LOG
   log_debug(LD_CHANNEL, "QUIC start listener");
+#endif
 
 #if 0
   struct sockaddr_in addr = { AF_INET, htons(port), { htonl(0x0b000002) } };
@@ -2441,7 +2447,9 @@ retry_quic_listener(uint16_t port)
 
   tlssecretsmap = tlssecretsmap_new();
   quic_listener = quux_listen((struct sockaddr*) &addr, quic_connected);
+#if QUUX_LOG
   log_debug(LD_CHANNEL, "QUIC listener started: %p", quic_listener);
+#endif
 
   if (!quic_listener) {
     log_warn(LD_NET,"QUIC socket creation failed: %s",
@@ -2449,7 +2457,9 @@ retry_quic_listener(uint16_t port)
     return -1;
   }
 
+#if QUUX_LOG
   log_fn(LOG_NOTICE, LD_NET, "QUIC listening on UDP port %u.", port);
+#endif
 
   return 0;
 }
