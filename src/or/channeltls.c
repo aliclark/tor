@@ -1226,29 +1226,20 @@ channel_tls_num_bytes_queued_method(channel_t *chan)
  * channel_tls_write_*_cell().
  */
 
+/**
+ * This abstraction is most unfortunate firstly because it's not specific to any circuit,
+ * secondly because it implies that we must have another whopping queue area after
+ * the p/n_queue.
+ *
+ * At least for the former reason, we'll say always writeable at this point
+ * and fix the scheduler to be less surprised about not writing everything
+ */
 static int
 channel_tls_num_cells_writeable_method(channel_t *chan)
 {
-  size_t outbuf_len;
-  ssize_t n;
   channel_tls_t *tlschan = BASE_CHAN_TO_TLS(chan);
-  size_t cell_network_size;
-
-  tor_assert(tlschan);
-  tor_assert(tlschan->conn);
-
-  cell_network_size = get_cell_network_size(tlschan->conn->wide_circ_ids);
-  outbuf_len = connection_get_outbuf_len(TO_CONN(tlschan->conn));
-  /* Get the number of cells */
-  n = CEIL_DIV(OR_CONN_HIGHWATER - outbuf_len, cell_network_size);
-  if (n < 0) n = 0;
-#if SIZEOF_SIZE_T > SIZEOF_INT
-  if (n > INT_MAX) n = INT_MAX;
-#endif
-
-  //hax
+  size_t cell_network_size = get_cell_network_size(tlschan->conn->wide_circ_ids);
   return CEIL_DIV(OR_CONN_HIGHWATER, cell_network_size);
-  return (int)n;
 }
 
 /**
