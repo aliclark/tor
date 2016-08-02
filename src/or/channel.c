@@ -2427,7 +2427,7 @@ channel_flush_cells(channel_t *chan)
 }
 
 /**
- * Check if any cells are available
+ * Check if any cells are available for the write scheduler.
  *
  * This gets used from the lower layer to check if any more cells are
  * available.
@@ -2437,10 +2437,6 @@ int
 channel_more_to_flush(channel_t *chan)
 {
   tor_assert(chan);
-
-  /* Check if we have any queued */
-  if (! TOR_SIMPLEQ_EMPTY(&chan->incoming_queue))
-      return 1;
 
   /* Check if any circuits would like to queue some */
   if (circuitmux_num_cells(chan->cmux) > 0) return 1;
