@@ -2184,6 +2184,11 @@ channel_flush_some_cells, (channel_t *chan, ssize_t num_cells))
     /* Try to flush as much as we can that's already queued */
     flushed += channel_flush_some_cells_from_outgoing_queue(chan,
         (unlimited ? -1 : num_cells - flushed));
+    /* If we still have outgoing_queue then we want that to drain first */
+    q_len_after = chan_cell_queue_len(&(chan->outgoing_queue));
+    if (q_len_after > 0) {
+      goto done;
+    }
     if (!unlimited && num_cells <= flushed) goto done;
 
     if (circuitmux_num_cells(chan->cmux) > 0) {
@@ -4037,9 +4042,7 @@ channel_get_global_queue_estimate(void)
 /*
  * Estimate the number of writeable cells
  *
- * Ask the lower layer for an estimate of how many cells it can accept, and
- * then subtract the length of our outgoing_queue, if any, to produce an
- * estimate of the number of cells this channel can accept for writes.
+ * Ask the lower layer for an estimate of how many cells it can accept.
  */
 
 int
@@ -4053,9 +4056,6 @@ channel_num_cells_writeable(channel_t *chan)
   if (chan->state == CHANNEL_STATE_OPEN) {
     /* Query lower layer */
     result = chan->num_cells_writeable(chan);
-    /* Subtract cell queue length, if any */
-    result -= chan_cell_queue_len(&chan->outgoing_queue);
-    if (result < 0) result = 0;
   } else {
     /* No cells are writeable in any other state */
     result = 0;

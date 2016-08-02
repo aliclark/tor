@@ -425,12 +425,13 @@ scheduler_run, (void))
           flushed += flushed_this_time;
         }
 
-        if (flushed < n_cells) {
-          /* We ran out of cells to flush */
-          chan->scheduler_state = SCHED_CHAN_WAITING_FOR_CELLS;
+        /* The channel may still have some cells */
+        if (channel_has_queued_writes(chan)) {
+          /* It's waiting to be able to write more */
+          chan->scheduler_state = SCHED_CHAN_WAITING_TO_WRITE;
           log_debug(LD_SCHED,
                     "Channel " U64_FORMAT " at %p "
-                    "entered waiting_for_cells from pending",
+                    "entered waiting_to_write from pending",
                     U64_PRINTF_ARG(chan->global_identifier),
                     chan);
         } else {
