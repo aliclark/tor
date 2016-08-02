@@ -2695,6 +2695,9 @@ channel_process_cells(channel_t *chan)
  *
  * This should be called by a channel_t subclass to queue an incoming fixed-
  * length cell for processing, and process it if possible.
+ *
+ * BUG: this function is only called from the libevent read callback,
+ * so absent any further read callbacks, incoming_queue will stay unprocessed.
  */
 
 void
