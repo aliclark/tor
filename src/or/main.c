@@ -2219,6 +2219,8 @@ run_main_loop_once(void)
                     event_active(conn->read_event, EV_READ, 1));
   called_loop_once = smartlist_len(active_linked_connection_lst) ? 1 : 0;
 
+  called_loop_once = 1;
+
   update_approx_time(time(NULL));
 
   /* poll until we have an event, or the second ends, or until we have
