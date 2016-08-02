@@ -176,9 +176,11 @@ static int streamcirc_attempt_write(streamcirc_t* sctx, const uint8_t* src, size
   log_debug(LD_CHANNEL, "QUIC attempted write successful");
 #endif
 
-  // XXX: is this needed?
+#if 0
+  // Change the scheduler from waiting_for_write back to pending
   connection_or_flushed_some(sctx->tlschan->conn);
   channel_notify_flushed(TLS_CHAN_TO_BASE(sctx->tlschan));
+#endif
 
   return 1;
 }
@@ -219,16 +221,29 @@ static void streamcirc_continue_write(quux_stream stream) {
 #endif
   sctx->write_cell_pos = 0;
 
-  // XXX: is this needed?
-  connection_or_flushed_some(sctx->tlschan->conn);
-  channel_notify_flushed(TLS_CHAN_TO_BASE(sctx->tlschan));
-
   if (sctx->tlschan->needs_flush) {
 #if QUUX_LOG
     log_debug(LD_CHANNEL, "QUIC flushing its pending cells");
 #endif
     sctx->tlschan->needs_flush = 0;
     channel_flush_cells(TLS_CHAN_TO_BASE(sctx->tlschan));
+    channel_notify_flushed(TLS_CHAN_TO_BASE(sctx->tlschan));
+    scheduler_channel_wants_writes(TLS_CHAN_TO_BASE(sctx->tlschan));
+
+#if 0
+    channel_flush_cells(TLS_CHAN_TO_BASE(sctx->tlschan));
+
+    //connection_or_flushed_some(sctx->tlschan->conn);
+    if (TOR_SIMPLEQ_EMPTY(&TLS_CHAN_TO_BASE(sctx->tlschan)->outgoing_queue)) {
+      channel_notify_flushed(TLS_CHAN_TO_BASE(sctx->tlschan));
+      // Change the scheduler from waiting_for_write back to pending
+      scheduler_channel_wants_writes(TLS_CHAN_TO_BASE(sctx->tlschan));
+
+    } else {
+      // Presumably the queue ab
+      sctx->tlschan->needs_flush = 1;
+    }
+#endif
   }
 }
 
@@ -275,9 +290,7 @@ static void streamcirc_continue_read(quux_stream stream) {
     }
 
     // need this one?
-#if 1
     channel_timestamp_active(TLS_CHAN_TO_BASE(tlschan));
-#endif
     circuit_build_times_network_is_live(get_circuit_build_times_mutable());
 
     cell_t cell;
@@ -1282,7 +1295,7 @@ channel_tls_write_cell_method(channel_t *chan, cell_t *cell)
     maybe_clear_cs_shift(tlschan, cell->circ_id);
 
     // By the function comment it sounds like this only relates to standard conns
-#if 1
+#if 0
     /* Touch the channel's active timestamp if there is one */
     if (tlschan->conn->chan)
       channel_timestamp_active(TLS_CHAN_TO_BASE(tlschan->conn->chan));
@@ -1415,7 +1428,7 @@ channel_tls_write_var_cell_method(channel_t *chan, var_cell_t *var_cell)
     maybe_clear_cs_shift(tlschan, var_cell->circ_id);
 
     // By the function comment it sounds like this only relates to standard conns
-#if 1
+#if 0
     /* Touch the channel's active timestamp if there is one */
     if (tlschan->conn->chan)
       channel_timestamp_active(TLS_CHAN_TO_BASE(tlschan->conn->chan));
