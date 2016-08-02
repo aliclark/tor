@@ -20,6 +20,7 @@
 #define TLS_CHAN_MAGIC 0x8a192427U
 
 typedef struct streamcirc_s {
+  // FIXME: can get rid of this ptr by attaching to stream's conn context
   channel_tls_t* tlschan;
   quux_stream stream;
 
