@@ -2185,8 +2185,7 @@ channel_flush_some_cells, (channel_t *chan, ssize_t num_cells))
     flushed += channel_flush_some_cells_from_outgoing_queue(chan,
         (unlimited ? -1 : num_cells - flushed));
     /* If we still have outgoing_queue then we want that to drain first */
-    q_len_after = chan_cell_queue_len(&(chan->outgoing_queue));
-    if (q_len_after > 0) {
+    if (!TOR_SIMPLEQ_EMPTY(&chan->outgoing_queue)) {
       goto done;
     }
     if (!unlimited && num_cells <= flushed) goto done;
