@@ -884,7 +884,13 @@ channel_tls_close_method(channel_t *chan)
 
   tor_assert(tlschan);
 
-  // TODO: close all the streams
+  // FIXME: this might not close the client control stream
+  MAP_FOREACH(streamcircmap_, tlschan->streamcircmap, circid_t, k, streamcirc_t*, sctx) {
+    quux_read_close(sctx->stream);
+    quux_write_close(sctx->stream);
+  } MAP_FOREACH_END;
+
+  // TODO: close the peer
 
   if (tlschan->conn) connection_or_close_normally(tlschan->conn, 1);
   else {
