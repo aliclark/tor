@@ -263,6 +263,14 @@ static void streamcirc_continue_read(quux_stream stream) {
   streamcirc_t* sctx = quux_get_stream_context(stream);
 
   channel_tls_t *tlschan = sctx->tlschan;
+
+  if (CHANNEL_IS_ERROR(TLS_CHAN_TO_BASE(tlschan))) {
+#if QUUX_LOG
+    log_debug(LD_CHANNEL, "QUIC ignoring read for error'd conn %p", tlschan);
+#endif
+    return;
+  }
+
   int wide_circ_ids = tlschan->conn->wide_circ_ids;
   size_t cell_network_size = get_cell_network_size(wide_circ_ids);
   uint8_t* read_buf = sctx->read_cell_buf;
