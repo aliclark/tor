@@ -264,9 +264,9 @@ static void streamcirc_continue_read(quux_stream stream) {
 
   channel_tls_t *tlschan = sctx->tlschan;
 
-  if (CHANNEL_IS_ERROR(TLS_CHAN_TO_BASE(tlschan))) {
+  if (CHANNEL_IS_ERROR(TLS_CHAN_TO_BASE(tlschan)) || CHANNEL_IS_CLOSED(TLS_CHAN_TO_BASE(tlschan))) {
 #if QUUX_LOG
-    log_debug(LD_CHANNEL, "QUIC ignoring read for error'd conn %p", tlschan);
+    log_debug(LD_CHANNEL, "QUIC ignoring read for closed/error'd conn %p", tlschan);
 #endif
     return;
   }
