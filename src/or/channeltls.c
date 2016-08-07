@@ -886,6 +886,9 @@ channel_tls_close_method(channel_t *chan)
 
   // FIXME: this might not close the client control stream
   MAP_FOREACH(streamcircmap_, tlschan->streamcircmap, circid_t, k, streamcirc_t*, sctx) {
+#if QUUX_LOG
+  log_debug(LD_CHANNEL, "QUIC closing stream %d", k);
+#endif
     quux_read_close(sctx->stream);
     quux_write_close(sctx->stream);
   } MAP_FOREACH_END;
