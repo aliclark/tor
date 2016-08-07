@@ -902,6 +902,9 @@ channel_tls_close_method(channel_t *chan)
   } MAP_FOREACH_END;
 
   // TODO: close the peer
+  if (tlschan->peer) {
+    quux_set_accept_cb(tlschan->peer, NULL);
+  }
 
   if (tlschan->conn) connection_or_close_normally(tlschan->conn, 1);
   else {
