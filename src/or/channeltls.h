@@ -28,10 +28,14 @@ typedef struct streamcirc_s {
   uint8_t read_cell_buf[CELL_MAX_NETWORK_SIZE];
   int read_cell_pos;
 
+#if 0
   // if the quic stream is blocked we may need to park a partial cell here
   // (the write_cell API is boolean around cell writes)
   uint8_t write_cell_buf[CELL_MAX_NETWORK_SIZE];
   int write_cell_pos;
+#else
+  buf_t* write_cell_buf;
+#endif
 
 } streamcirc_t;
 

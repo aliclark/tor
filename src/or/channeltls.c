@@ -142,12 +142,12 @@ static int streamcirc_attempt_write(streamcirc_t* sctx, const uint8_t* src, size
 
   tor_assert(count <= CELL_MAX_NETWORK_SIZE);
 
-  if (sctx->write_cell_pos != 0) {
+  if (buf_datalen(sctx->write_cell_buf) != 0) {
 #if QUUX_LOG
     log_debug(LD_CHANNEL, "QUIC won't write because data is already pending");
 #endif
-    sctx->tlschan->needs_flush = 1;
-    return -1;
+    write_to_buf((char*)src, count, sctx->write_cell_buf);
+    return 0;
   }
 
   quux_stream stream = sctx->stream;
@@ -161,8 +161,7 @@ static int streamcirc_attempt_write(streamcirc_t* sctx, const uint8_t* src, size
 #if QUUX_LOG
       log_debug(LD_CHANNEL, "QUIC paused during attempted write");
 #endif
-      memcpy(sctx->write_cell_buf, src + pos, remaining);
-      sctx->write_cell_pos = remaining;
+      write_to_buf((char*)src + pos, remaining, sctx->write_cell_buf);
       return 0;
     }
 
@@ -188,40 +187,22 @@ static int streamcirc_attempt_write(streamcirc_t* sctx, const uint8_t* src, size
 static void streamcirc_continue_write(quux_stream stream) {
   streamcirc_t* sctx = quux_get_stream_context(stream);
 
-#if QUUX_LOG
-  log_debug(LD_CHANNEL, "QUIC continuing write");
-#endif
-
-  int pos = 0;
-  int count = sctx->write_cell_pos;
-  uint8_t* src = sctx->write_cell_buf;
-
-  do {
-    int remaining = count - pos;
-    int bytes_wrote = quux_write(stream, src + pos, remaining);
-
-    if (!bytes_wrote) {
-#if QUUX_LOG
-      log_debug(LD_CHANNEL, "QUIC paused write");
-#endif
-      memmove(sctx->write_cell_buf, src + pos, remaining);
-      sctx->write_cell_pos = remaining;
-      return;
-    }
-
-    pos += bytes_wrote;
-#if QUUX_LOG
-    log_debug(LD_CHANNEL, "QUIC partial write");
-#endif
-
-  } while (pos < count);
+  size_t initial_size = buf_datalen(sctx->write_cell_buf);
+  size_t buf_flushlen = initial_size;
 
 #if QUUX_LOG
-  log_debug(LD_CHANNEL, "QUIC finished write");
+  log_debug(LD_CHANNEL, "QUIC continuing write %p %zu", sctx->tlschan, initial_size);
 #endif
-  sctx->write_cell_pos = 0;
 
-  if (sctx->tlschan->needs_flush) {
+  int written = flush_buf_quic(stream, sctx->write_cell_buf, initial_size,
+                &buf_flushlen);
+
+#if QUUX_LOG
+  log_debug(LD_CHANNEL, "QUIC wrote %p %d", sctx->tlschan, written);
+#endif
+
+  if (written == initial_size && sctx->tlschan->needs_flush) {
+
 #if QUUX_LOG
     log_debug(LD_CHANNEL, "QUIC flushing its pending cells");
 #endif
@@ -375,7 +356,7 @@ static streamcirc_t* channel_tls_get_streamcirc(channel_tls_t *tlschan, circid_t
     sctx->tlschan = tlschan;
     sctx->stream = quux_connect(tlschan->peer);
     sctx->read_cell_pos = 0;
-    sctx->write_cell_pos = 0;
+    sctx->write_cell_buf = buf_new();
 
     streamcircmap_set(tlschan->streamcircmap, circ_id, sctx);
 
@@ -405,7 +386,7 @@ static streamcirc_t* channel_tls_get_streamcirc(channel_tls_t *tlschan, circid_t
     // We could be clever and only do this on the control_stream,
     // but it needs extra coding to be safe from race with the circuit streams.
     int secrets_write = streamcirc_attempt_write(sctx, tlschan->tlssecrets, DIGEST256_LEN);
-    if (secrets_write <= 0) {
+    if (secrets_write < 0) {
 #if QUUX_LOG
       log_debug(LD_CHANNEL, "QUIC not able to write TLS secret immediately, chan %p", tlschan);
 #endif
@@ -570,7 +551,7 @@ void quic_accept(quux_stream stream) {
   sctx->tlschan = NULL;
   sctx->stream = stream;
   sctx->read_cell_pos = 0;
-  sctx->write_cell_pos = 0;
+  sctx->write_cell_buf = buf_new();
 
   quux_set_stream_context(stream, sctx);
 
@@ -687,7 +668,7 @@ channel_tls_connect(const tor_addr_t *addr, uint16_t port,
   sctx->tlschan = tlschan;
   sctx->stream = quux_connect(tlschan->peer);
   sctx->read_cell_pos = 0;
-  sctx->write_cell_pos = 0;
+  sctx->write_cell_buf = buf_new();
 
   // XXX: possible perf regression: we now do slow start twice,
   // once for TLS, then again on the quic conn
@@ -1383,6 +1364,7 @@ channel_tls_write_packed_cell_method(channel_t *chan,
     if (wrote < 0) {
       return 0;
     }
+
     maybe_clear_cs_shift(tlschan, circ_id);
 
     /* This is where the cell is finished; used to be done from relay.c */
@@ -1445,6 +1427,7 @@ channel_tls_write_var_cell_method(channel_t *chan, var_cell_t *var_cell)
     if (wrote < 0) {
       return 0;
     }
+
     maybe_clear_cs_shift(tlschan, var_cell->circ_id);
 
     // By the function comment it sounds like this only relates to standard conns

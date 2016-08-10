@@ -14,6 +14,8 @@
 
 #include "testsupport.h"
 
+#include <quux.h>
+
 buf_t *buf_new(void);
 buf_t *buf_new_with_capacity(size_t size);
 size_t buf_get_default_chunk_size(const buf_t *buf);
@@ -34,6 +36,7 @@ int read_to_buf_tls(tor_tls_t *tls, size_t at_most, buf_t *buf);
 
 int flush_buf(tor_socket_t s, buf_t *buf, size_t sz, size_t *buf_flushlen);
 int flush_buf_tls(tor_tls_t *tls, buf_t *buf, size_t sz, size_t *buf_flushlen);
+size_t flush_buf_quic(quux_stream stream, buf_t *buf, size_t sz, size_t *buf_flushlen);
 
 int write_to_buf(const char *string, size_t string_len, buf_t *buf);
 int write_to_buf_zlib(buf_t *buf, tor_zlib_state_t *state,

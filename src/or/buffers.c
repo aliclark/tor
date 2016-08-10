@@ -677,6 +677,39 @@ flush_chunk_tls(tor_tls_t *tls, buf_t *buf, chunk_t *chunk,
   return r;
 }
 
+/** Helper for flush_buf_tls(): try to write <b>sz</b> bytes from chunk
+ * <b>chunk</b> of buffer <b>buf</b> onto socket <b>s</b>.  (Tries to write
+ * more if there is a forced pending write size.)  On success, deduct the
+ * bytes written from *<b>buf_flushlen</b>.  Return the number of bytes
+ * written on success, and a TOR_TLS error code on failure or blocking.
+ */
+static INLINE size_t
+flush_chunk_quic(quux_stream quic, buf_t *buf, chunk_t *chunk,
+                size_t sz, size_t *buf_flushlen)
+{
+  size_t r;
+  char *data;
+
+  if (chunk) {
+    data = chunk->data;
+    tor_assert(sz <= chunk->datalen);
+  } else {
+    data = NULL;
+    tor_assert(sz == 0);
+  }
+  r = quux_write(quic, (uint8_t*)data, sz);
+  if (r <= 0)
+    return r;
+  if (*buf_flushlen > (size_t)r)
+    *buf_flushlen -= r;
+  else
+    *buf_flushlen = 0;
+  buf_remove_from_front(buf, r);
+  log_debug(LD_NET,"flushed %zu bytes, %d ready to flush, %d remain.",
+            r,(int)*buf_flushlen,(int)buf->datalen);
+  return r;
+}
+
 /** Write data from <b>buf</b> to the socket <b>s</b>.  Write at most
  * <b>sz</b> bytes, decrement *<b>buf_flushlen</b> by
  * the number of bytes actually written, and remove the written bytes
@@ -757,6 +790,48 @@ flush_buf_tls(tor_tls_t *tls, buf_t *buf, size_t flushlen,
     sz -= r;
     if (r == 0) /* Can't flush any more now. */
       break;
+  } while (sz > 0);
+  tor_assert(flushed < INT_MAX);
+  return (int)flushed;
+}
+
+/** As flush_buf(), but writes data to a TLS connection.  Can write more than
+ * <b>flushlen</b> bytes.
+ */
+size_t
+flush_buf_quic(quux_stream quic, buf_t *buf, size_t flushlen,
+              size_t *buf_flushlen)
+{
+  size_t r;
+  size_t flushed = 0;
+  ssize_t sz;
+  tor_assert(buf_flushlen);
+  tor_assert(*buf_flushlen <= buf->datalen);
+  tor_assert(flushlen <= *buf_flushlen);
+  sz = (ssize_t) flushlen;
+
+  /* we want to let tls write even if flushlen is zero, because it might
+   * have a partial record pending */
+  check_no_tls_errors();
+
+  check();
+  do {
+    size_t flushlen0;
+    if (buf->head) {
+      if ((ssize_t)buf->head->datalen >= sz)
+        flushlen0 = sz;
+      else
+        flushlen0 = buf->head->datalen;
+    } else {
+      flushlen0 = 0;
+    }
+
+    r = flush_chunk_quic(quic, buf, buf->head, flushlen0, buf_flushlen);
+    check();
+    if (r == 0) /* Can't flush any more now. */
+      break;
+    flushed += r;
+    sz -= r;
   } while (sz > 0);
   tor_assert(flushed < INT_MAX);
   return (int)flushed;
