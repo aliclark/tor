@@ -9,8 +9,6 @@
  * \brief Master header file for Tor-specific functionality.
  **/
 
-#define QUUX_LOG 0
-
 #ifndef TOR_OR_H
 #define TOR_OR_H
 
