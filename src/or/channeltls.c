@@ -949,6 +949,28 @@ channel_tls_free_method(channel_t *chan)
 
   tor_assert(tlschan);
 
+  // XXX: copy-pasted from close above
+#if QUUX_LOG
+    log_err(LD_CHANNEL, "QUIC free for tlschan %p", tlschan);
+#endif
+
+  // FIXME: this might not close the client control stream
+  MAP_FOREACH(streamcircmap_, tlschan->streamcircmap, circid_t, k, streamcirc_t*, sctx) {
+#if QUUX_LOG
+    log_err(LD_CHANNEL, "QUIC closing stream for circ_id %u", k);
+#endif
+
+    // XXX: I think the impl may be buggy?
+    quux_read_close(sctx->stream);
+    quux_write_close(sctx->stream);
+
+  } MAP_FOREACH_END;
+
+  // TODO: close the peer
+  if (tlschan->peer) {
+    quux_set_accept_cb(tlschan->peer, NULL);
+  }
+
   // TODO: free all the memory for streams and streamcircmap
 
   if (tlschan->conn) {
