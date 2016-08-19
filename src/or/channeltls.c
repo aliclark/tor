@@ -329,7 +329,6 @@ static streamcirc_t* channel_tls_get_streamcirc(channel_tls_t *tlschan, circid_t
 #if QUUX_LOG
       log_debug(LD_CHANNEL, "QUIC peer not arrived yet, circ_id %u cell will be queued for outbound, chan %p", circ_id, tlschan);
 #endif
-      sctx->tlschan->needs_flush = 1;
       return NULL;
     }
 
