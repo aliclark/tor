@@ -443,31 +443,11 @@ channel_tls_free_method(channel_t *chan)
 static double
 channel_tls_get_overhead_estimate_method(channel_t *chan)
 {
-  double overhead = 1.0f;
-  channel_tls_t *tlschan = BASE_CHAN_TO_TLS(chan);
-
-  tor_assert(tlschan);
-  tor_assert(tlschan->conn);
-
-  /* Just return 1.0f if we don't have sensible data */
-  if (tlschan->conn->bytes_xmitted > 0 &&
-      tlschan->conn->bytes_xmitted_by_tls >=
-      tlschan->conn->bytes_xmitted) {
-    overhead = ((double)(tlschan->conn->bytes_xmitted_by_tls)) /
-      ((double)(tlschan->conn->bytes_xmitted));
-
-    /*
-     * Never estimate more than 2.0; otherwise we get silly large estimates
-     * at the very start of a new TLS connection.
-     */
-    if (overhead > 2.0f) overhead = 2.0f;
-  }
-
-  log_debug(LD_CHANNEL,
-            "Estimated overhead ratio for TLS chan " U64_FORMAT " is %f",
-            U64_PRINTF_ARG(chan->global_identifier), overhead);
-
-  return overhead;
+  // quux doesn't provide this type of information.
+  // It's not a very good idea in general.
+  // Tor doesn't need to faff about with this crap -
+  // its use-case works just fine without it - and it shouldn't.
+  return 1.0f;
 }
 
 /**
@@ -587,6 +567,9 @@ channel_tls_get_remote_descr_method(channel_t *chan, int flags)
  *
  * This implements the has_queued_writes method for channel_tls t_; it returns
  * 1 iff we have queued writes on the outbuf of the underlying or_connection_t.
+ *
+ * For QUIC this doesn't make much sense without knowing a circuit ID
+ * but 0 works fine as a default.
  */
 
 static int
@@ -607,7 +590,9 @@ channel_tls_has_queued_writes_method(channel_t *chan)
     connection_get_outbuf_len(TO_CONN(tlschan->conn)) :
     0;
 
-  return (outbuf_len > 0);
+  // QUUX will generally return 0 here since the queued writes exist
+  // on the streamcirc buf_t's and not the tlschan->conn
+  return 0;
 }
 
 /**
@@ -711,6 +696,9 @@ channel_tls_matches_target_method(channel_t *chan,
 /**
  * Tell the upper layer how many bytes we have queued and not yet
  * sent.
+ *
+ * For QUIC this doesn't make much sense without knowing a circuit ID
+ * but 0 works fine as a default.
  */
 
 static size_t
@@ -721,7 +709,12 @@ channel_tls_num_bytes_queued_method(channel_t *chan)
   tor_assert(tlschan);
   tor_assert(tlschan->conn);
 
-  return connection_get_outbuf_len(TO_CONN(tlschan->conn));
+  // how to not have this optimised out?
+  size_t result = connection_get_outbuf_len(TO_CONN(tlschan->conn));
+
+  // QUUX will generally return 0 here since the queued writes exist
+  // on the streamcirc buf_t's and not the tlschan->conn
+  return 0;
 }
 
 /**
@@ -732,27 +725,21 @@ channel_tls_num_bytes_queued_method(channel_t *chan)
  * channel_tls_write_*_cell().
  */
 
+/**
+ * This abstraction is most unfortunate firstly because it's not specific to any circuit,
+ * secondly because it implies that we must have another whopping queue area after
+ * the p/n_queue.
+ *
+ * At least for the former reason, we'll say always writeable at this point
+ * and fix the scheduler to be less surprised about not writing everything
+ */
 static int
 channel_tls_num_cells_writeable_method(channel_t *chan)
 {
-  size_t outbuf_len;
-  ssize_t n;
   channel_tls_t *tlschan = BASE_CHAN_TO_TLS(chan);
-  size_t cell_network_size;
 
-  tor_assert(tlschan);
-  tor_assert(tlschan->conn);
-
-  cell_network_size = get_cell_network_size(tlschan->conn->wide_circ_ids);
-  outbuf_len = connection_get_outbuf_len(TO_CONN(tlschan->conn));
-  /* Get the number of cells */
-  n = CEIL_DIV(OR_CONN_HIGHWATER - outbuf_len, cell_network_size);
-  if (n < 0) n = 0;
-#if SIZEOF_SIZE_T > SIZEOF_INT
-  if (n > INT_MAX) n = INT_MAX;
-#endif
-
-  return (int)n;
+  size_t cell_network_size = get_cell_network_size(tlschan->conn->wide_circ_ids);
+  return CEIL_DIV(OR_CONN_HIGHWATER, cell_network_size);
 }
 
 /**
