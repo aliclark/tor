@@ -592,7 +592,7 @@ channel_tls_has_queued_writes_method(channel_t *chan)
 
   // QUUX will generally return 0 here since the queued writes exist
   // on the streamcirc buf_t's and not the tlschan->conn
-  return 0;
+  return outbuf_len & 0;
 }
 
 /**
@@ -714,7 +714,7 @@ channel_tls_num_bytes_queued_method(channel_t *chan)
 
   // QUUX will generally return 0 here since the queued writes exist
   // on the streamcirc buf_t's and not the tlschan->conn
-  return 0;
+  return result & 0;
 }
 
 /**
