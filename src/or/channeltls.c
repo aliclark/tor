@@ -1047,7 +1047,8 @@ channel_tls_free_method(channel_t *chan)
   if (tlschan->peer) {
     quux_set_accept_cb(tlschan->peer, NULL);
     // XXX: This is an immediate close, won't wait for anything to finish
-    quux_close(tlschan->peer);
+    // TODO: unfortunately this doesn't cancel alarms properly
+    //quux_close(tlschan->peer);
     tlschan->peer = NULL;
   }
 
