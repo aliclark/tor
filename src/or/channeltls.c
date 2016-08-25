@@ -417,6 +417,13 @@ static void streamcirc_associate_sctx(channel_tls_t *tlschan, circid_t circ_id, 
 // TODO: also want to delete entries once the connection goes away
 tlssecretsmap_t* tlssecretsmap;
 
+static void quic_closed_stream(quux_stream stream) {
+  streamcirc_t* sctx = quux_get_stream_context(stream);
+  quux_free_stream(stream);
+  buf_free(sctx->write_cell_buf);
+  free(sctx);
+}
+
 static void quic_accept_readable(quux_stream stream) {
 
   streamcirc_t* sctx = quux_get_stream_context(stream);
@@ -454,9 +461,13 @@ static void quic_accept_readable(quux_stream stream) {
       base16_encode(hex, 2*DIGEST256_LEN+1, (char*)sctx->read_cell_buf, DIGEST256_LEN);
       log_debug(LD_CHANNEL, "[err] QUIC got invalid auth secret %s, sctx %p", hex, sctx);
 
-      quux_read_close(stream);
-      quux_write_close(stream);
-      free(sctx);
+      if (quux_stream_status(stream) == 1) {
+        quic_closed_stream(stream);
+      } else {
+        quux_set_closed_cb(stream, quic_closed_stream);
+        quux_read_close(stream);
+        quux_write_close(stream);
+      }
       return;
     }
 
@@ -872,7 +883,11 @@ channel_tls_close_method(channel_t *chan)
 
   tor_assert(tlschan);
 
-  // FIXME: this might not close the client control stream
+  if (tlschan->control_streamcirc) {
+    quux_read_close(tlschan->control_streamcirc->stream);
+    quux_write_close(tlschan->control_streamcirc->stream);
+  }
+
   MAP_FOREACH(streamcircmap_, tlschan->streamcircmap, circid_t, k, streamcirc_t*, sctx) {
 #if QUUX_LOG
   log_debug(LD_CHANNEL, "QUIC closing stream %d", k);
@@ -880,6 +895,13 @@ channel_tls_close_method(channel_t *chan)
     quux_read_close(sctx->stream);
     quux_write_close(sctx->stream);
   } MAP_FOREACH_END;
+
+  if (tlschan->paused_circuits) {
+    SMARTLIST_FOREACH_BEGIN(tlschan->paused_circuits, quux_stream, stream) {
+      quux_read_close(stream);
+      quux_write_close(stream);
+    } SMARTLIST_FOREACH_END(stream);
+  }
 
   // TODO: close the peer
   if (tlschan->peer) {
@@ -949,29 +971,60 @@ channel_tls_free_method(channel_t *chan)
 
   tor_assert(tlschan);
 
-  // XXX: copy-pasted from close above
 #if QUUX_LOG
     log_err(LD_CHANNEL, "QUIC free for tlschan %p", tlschan);
 #endif
 
-  // FIXME: this might not close the client control stream
+    tlssecretsmap_remove(tlssecretsmap, tlschan->tlssecrets);
+
+    if (tlschan->control_streamcirc) {
+      if (quux_stream_status(tlschan->control_streamcirc->stream) == 1) {
+        quic_closed_stream(tlschan->control_streamcirc->stream);
+      } else {
+        quux_set_closed_cb(tlschan->control_streamcirc->stream, quic_closed_stream);
+        quux_read_close(tlschan->control_streamcirc->stream);
+        quux_write_close(tlschan->control_streamcirc->stream);
+      }
+      tlschan->control_streamcirc = NULL;
+    }
+
   MAP_FOREACH(streamcircmap_, tlschan->streamcircmap, circid_t, k, streamcirc_t*, sctx) {
 #if QUUX_LOG
     log_err(LD_CHANNEL, "QUIC closing stream for circ_id %u", k);
 #endif
-
-    // XXX: I think the impl may be buggy?
-    quux_read_close(sctx->stream);
-    quux_write_close(sctx->stream);
-
+    if (quux_stream_status(sctx->stream) == 1) {
+      quic_closed_stream(sctx->stream);
+    } else {
+      quux_set_closed_cb(sctx->stream, quic_closed_stream);
+      quux_read_close(sctx->stream);
+      quux_write_close(sctx->stream);
+    }
   } MAP_FOREACH_END;
 
-  // TODO: close the peer
-  if (tlschan->peer) {
-    quux_set_accept_cb(tlschan->peer, NULL);
+  streamcircmap_free(tlschan->streamcircmap, NULL);
+  tlschan->streamcircmap = NULL;
+
+  if (tlschan->paused_circuits) {
+    SMARTLIST_FOREACH_BEGIN(tlschan->paused_circuits, quux_stream, stream) {
+      if (quux_stream_status(stream) == 1) {
+        quic_closed_stream(stream);
+      } else {
+        quux_set_closed_cb(stream, quic_closed_stream);
+        quux_read_close(stream);
+        quux_write_close(stream);
+      }
+    } SMARTLIST_FOREACH_END(stream);
+
+    smartlist_free(tlschan->paused_circuits);
+    tlschan->paused_circuits = NULL;
   }
 
-  // TODO: free all the memory for streams and streamcircmap
+  if (tlschan->peer) {
+    quux_set_accept_cb(tlschan->peer, NULL);
+    // XXX: This is an immediate close, won't wait for anything to finish
+    quux_close(tlschan->peer);
+    tlschan->peer = NULL;
+  }
 
   if (tlschan->conn) {
     tlschan->conn->chan = NULL;
@@ -1594,6 +1647,7 @@ channel_tls_handle_state_change_on_orconn(channel_tls_t *chan,
 
       // Now the TLS secret is written we can register the stream as CircID 0
       streamcirc_associate_sctx(chan, 0, sctx);
+      chan->control_streamcirc = NULL;
       chan->buffered_cs_id = 1;
 
     } else {
@@ -1601,9 +1655,9 @@ channel_tls_handle_state_change_on_orconn(channel_tls_t *chan,
       if (chan->paused_circuits) {
         SMARTLIST_FOREACH(chan->paused_circuits, quux_stream, stream,
             quic_accept_readable(stream));
+        smartlist_free(chan->paused_circuits);
+        chan->paused_circuits = NULL;
       }
-      smartlist_free(chan->paused_circuits);
-      chan->paused_circuits = NULL;
     }
 
     /* We might have just become writeable; check and tell the scheduler */
