@@ -260,30 +260,32 @@ static void streamcirc_continue_read(quux_stream stream) {
   log_debug(LD_CHANNEL, "QUIC continuing cell reads, chan %p", tlschan);
 #endif
 
-  for (;;) {
-    if (!sctx->read_cell_pos) {
+  if (!sctx->read_cell_pos) {
+    for (;;) {
       // superfast case: try to read directly from QUIC's data buffers
       uint8_t* read_ref = quux_peek_reference(stream, cell_network_size);
 
-      if (read_ref) {
-        // need this one?
-        channel_timestamp_active(TLS_CHAN_TO_BASE(tlschan));
-        circuit_build_times_network_is_live(get_circuit_build_times_mutable());
-
-        cell_t cell;
-        cell_unpack(&cell, (char*)read_ref, wide_circ_ids);
-
-    #if QUUX_LOG
-        log_debug(LD_CHANNEL, "QUIC peeked a full %s cell, chan %p", cell_command_to_string(cell.command), tlschan);
-    #endif
-
-        channel_tls_handle_cell(&cell, tlschan->conn);
-
-        quux_read_consume(stream, cell_network_size);
-        continue;
+      if (!read_ref) {
+        break;
       }
-    }
 
+      // need this one?
+      channel_timestamp_active(TLS_CHAN_TO_BASE(tlschan));
+      circuit_build_times_network_is_live(get_circuit_build_times_mutable());
+
+      cell_t cell;
+      cell_unpack(&cell, (char*)read_ref, wide_circ_ids);
+
+  #if QUUX_LOG
+      log_debug(LD_CHANNEL, "QUIC peeked a full %s cell, chan %p", cell_command_to_string(cell.command), tlschan);
+  #endif
+      quux_read_consume(stream, cell_network_size);
+
+      channel_tls_handle_cell(&cell, tlschan->conn);
+    }
+  }
+
+  for (;;) {
     int bytes_read = quux_read(stream, read_buf + sctx->read_cell_pos, cell_network_size - sctx->read_cell_pos);
 
     if (!bytes_read) {
